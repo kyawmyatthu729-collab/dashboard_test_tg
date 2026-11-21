@@ -630,8 +630,11 @@ async def fetch_regions_weather_reliable(session, regions_data) -> tuple:
     return ok_count, "\n\n".join(sections)
 
 async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
-    # Query today's exact date in YYYYMMDD so finished & upcoming matches both appear
-    date_param = now.strftime("%Y%m%d")
+    # မြန်မာည ၁၂:၀၀ ကျော်လျှင် ဥရောပ/US ဘက်တွင် ယမန်နေ့ရက်စွဲဖြစ်နေသေးသဖြင့် ၂ ရက်စာ ဆွဲယူရန်
+    yest_str = (now - datetime.timedelta(days=1)).strftime("%Y%m%d")
+    today_str = now.strftime("%Y%m%d")
+    date_range = f"{yest_str}-{today_str}"
+
     leagues = [
         ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
         ("🇪🇸 La Liga", "esp.1"),
@@ -643,16 +646,28 @@ async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
     finished_lines = []
     upcoming_lines = []
 
+    window_start = now - datetime.timedelta(hours=14)
+    window_end = now + datetime.timedelta(hours=20)
+
     for league_name, code in leagues:
         try:
-            f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_param}"
+            f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_range}"
             async with session.get(f_url, timeout=10) as resp:
                 if resp.status == 200:
                     f_data = await resp.json()
                     for ev in f_data.get("events", []):
+                        try:
+                            utc_dt = datetime.datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=datetime.timezone.utc)
+                            mm_dt = utc_dt.astimezone(MM_TZ)
+                        except Exception:
+                            mm_dt = now
+
+                        # လွန်ခဲ့တဲ့ ၁၄ နာရီမှ လာမယ့် ၂၀ နာရီအတွင်း ပွဲစဉ်များကိုသာ ပြမည်
+                        if not (window_start <= mm_dt <= window_end):
+                            continue
+
                         status_type = ev["status"]["type"]["state"]
                         comp = ev["competitions"][0]["competitors"]
-                        # Ensure home team is listed first
                         home_c = next((c for c in comp if c.get("homeAway") == "home"), comp[0])
                         away_c = next((c for c in comp if c.get("homeAway") == "away"), comp[1])
 
@@ -667,11 +682,7 @@ async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
                         elif status_type == "post":
                             finished_lines.append(f"✅ {league_name}: **{home} {h_score} - {a_score} {away}** `(FT)`")
                         elif status_type == "pre":
-                            try:
-                                utc_dt = datetime.datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=datetime.timezone.utc)
-                                mm_time = utc_dt.astimezone(MM_TZ).strftime("%I:%M %p")
-                            except Exception:
-                                mm_time = detail
+                            mm_time = mm_dt.strftime("%I:%M %p")
                             upcoming_lines.append(f"⏳ {league_name}: {home} vs {away} `({mm_time})`")
         except Exception:
             pass
