@@ -271,34 +271,39 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
     MO = 1954168.050623
     my = math.floor((jdn - 0.5 - MO) / SY)
 
-    def chk_my(year):
+    def get_my_const(year):
+        # ၁၃၈၀ မှ ၁၃၉၅ အထိ တိကျသော ဝါထပ်/ရက်ငင်ဇယား
+        # (watat: 0=ပုံမှန်, 1=ဝါထပ် | wte: 0=ဝါငယ်ထပ်, 1=ဝါကြီးထပ်)
+        exact_table = {
+            1380: (1, 0), 1381: (0, 0), 1382: (1, 0), 1383: (0, 0),
+            1384: (0, 0), 1385: (1, 1), 1386: (0, 0), 1387: (0, 0),
+            1388: (1, 0), 1389: (0, 0), 1390: (0, 0), 1391: (1, 1),
+            1392: (0, 0), 1393: (1, 0), 1394: (0, 0), 1395: (0, 0)
+        }
         WO = -0.5 if year >= 1312 else (-1.1 if year >= 1217 else -0.85)
-        watat = 0
         ed = (SY * (year + 3739)) % 29.530587946
         if ed < 13.765293973:
             ed += 29.530587946
-        if year >= 1312 and ed >= (29.530587946 - 13.765293973):
-            watat = 1
 
-        exact_watat = {1380: 1, 1381: 0, 1382: 1, 1383: 0, 1384: 0, 1385: 1, 1386: 0, 1387: 0, 1388: 1, 1389: 0, 1390: 0, 1391: 1, 1392: 0, 1393: 1}
-        if year in exact_watat:
-            watat = exact_watat[year]
+        if year in exact_table:
+            watat, wte = exact_table[year]
+        else:
+            watat = 1 if (year >= 1312 and ed >= (29.530587946 - 13.765293973)) else 0
+            wte = 0
 
         fm = round(SY * year + MO - ed + 4.5 * watat + WO)
-        wte = 0
-        if watat == 1:
-            exact_big = {1385: 1, 1388: 0, 1391: 1}
-            wte = exact_big.get(year, 0)
         return watat, fm, wte
 
-    watat, fm, wte = chk_my(my)
-    prev_watat, prev_fm, prev_wte = chk_my(my - 1)
-    tg1 = prev_fm + 354 + prev_watat * 30 + prev_wte
+    watat, fm, wte = get_my_const(my)
+    prev_watat, prev_fm, prev_wte = get_my_const(my - 1)
+    # နှစ်ဆန်း ၁ ရက်နေ့ JDN (ယခင်နှစ် ဝါဆိုလပြည့် + ၂၅၉ + ဝါထပ်ရက်)
+    tg1 = prev_fm + 259 + prev_watat * 30 + prev_wte
+
     if jdn < tg1:
         my -= 1
         watat, fm, wte = prev_watat, prev_fm, prev_wte
-        prev_watat, prev_fm, prev_wte = chk_my(my - 1)
-        tg1 = prev_fm + 354 + prev_watat * 30 + prev_wte
+        prev_watat, prev_fm, prev_wte = get_my_const(my - 1)
+        tg1 = prev_fm + 259 + prev_watat * 30 + prev_wte
 
     dd = jdn - tg1 + 1
     b = wte
