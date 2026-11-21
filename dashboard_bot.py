@@ -128,7 +128,7 @@ cache_data = {
     "weather_main": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "weather_other": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "market": "• 🪙 **Gold Spot:** `-`\n• ₿ **BTC:** `-` | **BNB:** `-`\n• 💎 **SOL:** `-` | **TON:** `-`",
-    "football": "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽",
+    "football": "ယနေ့ ပွဲစဉ်များ မရှိသေးပါ ⚽",
     "history_date": "",
     "history_text": "",
     "debug_log": "Not run yet"
@@ -452,7 +452,7 @@ MM_MONTHS_WIKI = [
 ]
 
 async def translate_en_to_my(session, text: str) -> str:
-    # 1. Primary: Gemini API (မြန်မာဘာသာသို့ သဘာဝကျကျနှင့် တိုတိုရှင်းရှင်း ပြန်ပေးရန်)
+    # 1. Primary: Gemini API
     if GEMINI_API_KEY:
         try:
             g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -478,7 +478,7 @@ async def translate_en_to_my(session, text: str) -> str:
         except Exception as e:
             print(f"⚠️ Gemini Translate ERR: {e}")
 
-    # 2. Backup: Google Translate (Gemini Key မရှိလျှင် သို့မဟုတ် Error တက်လျှင်)
+    # 2. Backup: Google Translate
     try:
         t_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={quote(text)}"
         async with session.get(t_url, timeout=10) as resp:
@@ -521,14 +521,12 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     if cache_data.get("history_date") == date_key and cache_data.get("history_text"):
         return
 
-    # 1. မြန်မာ Wiki မှ အရင်ရှာမည်
     mm_wiki_res = await fetch_myanmar_wiki_event(session, now)
     if mm_wiki_res:
         cache_data["history_date"] = date_key
         cache_data["history_text"] = mm_wiki_res
         return
 
-    # 2. English Wiki မှ ယူ၍ Gemini (သို့) Google Translate ဖြင့် မြန်မာဘာသာသို့ ပြန်မည်
     mm_keywords = ["myanmar", "burma", "rangoon", "yangon", "mandalay", "u thant", "aung san", "bagan"]
     try:
         url = f"https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{now.month:02d}/{now.day:02d}"
@@ -565,8 +563,8 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     except Exception:
         pass
 
-# ================= BATCH WEATHER + RELIABLE MARKET & SPORTS =================
-async def fetch_regions_weather_batch(session, regions_data) -> tuple:
+# ================= RELIABLE WEATHER, MARKET & DAILY FOOTBALL =================
+async def fetch_regions_weather_reliable(session, regions_data) -> tuple:
     all_cities = []
     for region_title, cities in regions_data:
         for name, lat, lon in cities:
@@ -574,25 +572,50 @@ async def fetch_regions_weather_batch(session, regions_data) -> tuple:
 
     lats = ",".join(str(c[2]) for c in all_cities)
     lons = ",".join(str(c[3]) for c in all_cities)
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current_weather=true"
+    # Open-Meteo v1 current endpoint (supports multi-coordinate reliably)
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
 
     results_map = {}
     ok_count = 0
     try:
-        async with session.get(url, timeout=15) as resp:
+        async with session.get(url, timeout=18) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 if isinstance(data, dict):
                     data = [data]
                 for idx, item in enumerate(data):
-                    cw = item.get("current_weather", {})
-                    if "temperature" in cw:
-                        temp = round(cw["temperature"])
-                        desc = decode_wmo_weather(cw.get("weathercode", 0))
+                    curr = item.get("current", {})
+                    if "temperature_2m" in curr:
+                        temp = round(curr["temperature_2m"])
+                        desc = decode_wmo_weather(curr.get("weather_code", 0))
                         results_map[idx] = f"`{temp}°C` ({desc})"
                         ok_count += 1
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Open-Meteo Batch ERR: {e}")
+
+    # Fallback: If batch failed, query individually via Open-Meteo single endpoint
+    if ok_count == 0:
+        async def fetch_one(idx, lat, lon):
+            u = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code"
+            try:
+                async with session.get(u, timeout=10) as r:
+                    if r.status == 200:
+                        d = await r.json()
+                        c = d.get("current", {})
+                        if "temperature_2m" in c:
+                            t = round(c["temperature_2m"])
+                            ds = decode_wmo_weather(c.get("weather_code", 0))
+                            return idx, f"`{t}°C` ({ds})"
+            except Exception:
+                pass
+            return idx, None
+
+        tasks = [fetch_one(i, c[2], c[3]) for i, c in enumerate(all_cities)]
+        single_res = await asyncio.gather(*tasks)
+        for idx, val in single_res:
+            if val:
+                results_map[idx] = val
+                ok_count += 1
 
     sections = []
     idx_counter = 0
@@ -606,19 +629,73 @@ async def fetch_regions_weather_batch(session, regions_data) -> tuple:
 
     return ok_count, "\n\n".join(sections)
 
+async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
+    # Query today's exact date in YYYYMMDD so finished & upcoming matches both appear
+    date_param = now.strftime("%Y%m%d")
+    leagues = [
+        ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
+        ("🇪🇸 La Liga", "esp.1"),
+        ("🏆 UCL", "uefa.champions"),
+        ("🇮🇹 Serie A", "ita.1"),
+        ("🇩🇪 Bundesliga", "ger.1")
+    ]
+    live_lines = []
+    finished_lines = []
+    upcoming_lines = []
+
+    for league_name, code in leagues:
+        try:
+            f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_param}"
+            async with session.get(f_url, timeout=10) as resp:
+                if resp.status == 200:
+                    f_data = await resp.json()
+                    for ev in f_data.get("events", []):
+                        status_type = ev["status"]["type"]["state"]
+                        comp = ev["competitions"][0]["competitors"]
+                        # Ensure home team is listed first
+                        home_c = next((c for c in comp if c.get("homeAway") == "home"), comp[0])
+                        away_c = next((c for c in comp if c.get("homeAway") == "away"), comp[1])
+
+                        home = home_c["team"]["abbreviation"]
+                        away = away_c["team"]["abbreviation"]
+                        h_score = home_c.get("score", "0")
+                        a_score = away_c.get("score", "0")
+                        detail = ev["status"]["type"]["shortDetail"]
+
+                        if status_type == "in":
+                            live_lines.append(f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
+                        elif status_type == "post":
+                            finished_lines.append(f"✅ {league_name}: **{home} {h_score} - {a_score} {away}** `(FT)`")
+                        elif status_type == "pre":
+                            try:
+                                utc_dt = datetime.datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=datetime.timezone.utc)
+                                mm_time = utc_dt.astimezone(MM_TZ).strftime("%I:%M %p")
+                            except Exception:
+                                mm_time = detail
+                            upcoming_lines.append(f"⏳ {league_name}: {home} vs {away} `({mm_time})`")
+        except Exception:
+            pass
+
+    all_matches = live_lines + finished_lines + upcoming_lines
+    total_count = len(all_matches)
+    if not all_matches:
+        return 0, "ယနေ့ ပွဲစဉ်များ မရှိသေးပါ ⚽"
+    return total_count, "\n".join(all_matches[:12])
+
 async def update_external_data() -> str:
     logs = []
+    now = get_now()
     async with get_http_session() as session:
         # 0. History
-        await fetch_on_this_day(session, get_now())
+        await fetch_on_this_day(session, now)
         logs.append(f"📜 History: {'OK' if cache_data['history_text'] else 'Empty'}")
 
-        # 1. Batch Weather
+        # 1. Weather (All 45 cities)
         try:
-            ok1, main_w = await fetch_regions_weather_batch(session, MAIN_REGIONS)
+            ok1, main_w = await fetch_regions_weather_reliable(session, MAIN_REGIONS)
             if ok1 > 0:
                 cache_data["weather_main"] = main_w
-            ok2, other_w = await fetch_regions_weather_batch(session, OTHER_REGIONS)
+            ok2, other_w = await fetch_regions_weather_reliable(session, OTHER_REGIONS)
             if ok2 > 0:
                 cache_data["weather_other"] = other_w
             logs.append(f"🌤 Weather: {ok1 + ok2}/45 cities OK")
@@ -685,41 +762,10 @@ async def update_external_data() -> str:
             except Exception as e:
                 logs.append(f"💹 CoinGecko ERR: {e}")
 
-        # 3. Football Live & Scores (ESPN)
-        leagues = [
-            ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
-            ("🇪🇸 La Liga", "esp.1"),
-            ("🏆 UCL", "uefa.champions"),
-            ("🇮🇹 Serie A", "ita.1"),
-            ("🇩🇪 Bundesliga", "ger.1")
-        ]
-        match_lines = []
-        for league_name, code in leagues:
-            try:
-                f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard"
-                async with session.get(f_url, timeout=10) as resp:
-                    if resp.status == 200:
-                        f_data = await resp.json()
-                        for ev in f_data.get("events", []):
-                            status_type = ev["status"]["type"]["state"]
-                            comp = ev["competitions"][0]["competitors"]
-                            home = comp[0]["team"]["abbreviation"]
-                            away = comp[1]["team"]["abbreviation"]
-                            h_score = comp[0].get("score", "0")
-                            a_score = comp[1].get("score", "0")
-                            detail = ev["status"]["type"]["shortDetail"]
-
-                            if status_type == "in":
-                                match_lines.insert(0, f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
-                            elif status_type == "pre" and len(match_lines) < 8:
-                                match_lines.append(f"⏳ {league_name}: {home} vs {away} ({detail})")
-                            elif status_type == "post" and len(match_lines) < 5:
-                                match_lines.append(f"✅ {league_name}: {home} {h_score} - {a_score} {away} (FT)")
-            except Exception:
-                pass
-
-        cache_data["football"] = "\n".join(match_lines[:8]) if match_lines else "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽"
-        logs.append(f"⚽ Football: {len(match_lines)} matches OK")
+        # 3. Football (1-day finished + live + upcoming)
+        f_count, f_text = await fetch_daily_football(session, now)
+        cache_data["football"] = f_text
+        logs.append(f"⚽ Football ({now.strftime('%d %b')}): {f_count} matches OK")
 
     summary = "\n".join(logs)
     cache_data["debug_log"] = summary
@@ -856,7 +902,7 @@ def render_page(page_idx: int) -> str:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 **Global Gold & Crypto Prices**\n"
             f"{cache_data['market']}\n\n"
-            f"⚽ **Football Live & Scores**\n"
+            f"⚽ **Today's Football ({now.strftime('%d %b')})**\n"
             f"{cache_data['football']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔄 _စာမျက်နှာ အလိုအလျောက် ပြောင်းလဲပြသနေသည်_"
@@ -934,7 +980,7 @@ async def cmd_test_api(client, message):
         f"{status_report}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"**Market Preview:**\n{cache_data['market']}\n\n"
-        f"**History Preview:**\n{cache_data['history_text'] or 'Empty'}"
+        f"**Football Preview:**\n{cache_data['football']}"
     )
 
 # 1. Manual Unified Backup & Restore (/backup & /restore)
