@@ -23,6 +23,7 @@ from pyrogram.errors import MessageNotModified, FloodWait
 API_ID = int(os.environ.get("API_ID", "123456"))
 API_HASH = os.environ.get("API_HASH", "your_api_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 OWNER_ID = int(os.environ.get("OWNER_ID", "123456789"))
 TARGET_GROUP_ID = int(os.environ.get("TARGET_GROUP_ID", "-1001234567890"))
@@ -444,23 +445,53 @@ def get_anniversary_line(now: datetime.datetime) -> str:
         pairs.append(f"**{p1}** ❤️ **{p2}**{yr_txt}")
     return f"💑 **Happy Anniversary:** 🎉 {', '.join(pairs)} 🥂"
 
-# ================= MYANMAR ON THIS DAY (MY WIKI + AUTO TRANSLATE) =================
+# ================= MYANMAR ON THIS DAY (MY WIKI + GEMINI + TRANSLATE BACKUP) =================
 MM_MONTHS_WIKI = [
     "", "ဇန်နဝါရီ", "ဖေဖော်ဝါရီ", "မတ်", "ဧပြီ", "မေ", "ဇွန်",
     "ဇူလိုင်", "ဩဂုတ်", "စက်တင်ဘာ", "အောက်တိုဘာ", "နိုဝင်ဘာ", "ဒီဇင်ဘာ"
 ]
 
 async def translate_en_to_my(session, text: str) -> str:
+    # 1. Primary: Gemini API (မြန်မာဘာသာသို့ သဘာဝကျကျနှင့် တိုတိုရှင်းရှင်း ပြန်ပေးရန်)
+    if GEMINI_API_KEY:
+        try:
+            g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{
+                    "parts": [{
+                        "text": (
+                            "အောက်ပါ သမိုင်းဖြစ်ရပ်စာကြောင်းကို မြန်မာဘာသာသို့ သဘာဝကျကျနှင့် "
+                            "တိုတိုရှင်းရှင်း (စာကြောင်း ၁ ကြောင်းစာခန့်သာ) ဘာသာပြန်ပေးပါ။ "
+                            "ဘာသာပြန်စာသားတစ်ခုတည်းကိုသာ ပြန်ဖြေပါ၊ အခြားရှင်းလင်းချက် လုံးဝမထည့်ပါနှင့်-\n\n"
+                            f"{text}"
+                        )
+                    }]
+                }]
+            }
+            async with session.post(g_url, json=payload, timeout=12) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    ans = data["candidates"][0]["content"]["parts"][0]["text"]
+                    cleaned = clean_md(ans)
+                    if cleaned and cleaned != "User":
+                        return cleaned
+        except Exception as e:
+            print(f"⚠️ Gemini Translate ERR: {e}")
+
+    # 2. Backup: Google Translate (Gemini Key မရှိလျှင် သို့မဟုတ် Error တက်လျှင်)
     try:
         t_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={quote(text)}"
         async with session.get(t_url, timeout=10) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 translated = "".join(part[0] for part in data[0] if part[0])
-                return clean_md(translated)
-    except Exception:
-        pass
-    return clean_md(text)
+                cleaned = clean_md(translated)
+                if cleaned and cleaned != "User":
+                    return cleaned
+    except Exception as e:
+        print(f"⚠️ Backup Translate ERR: {e}")
+
+    return ""
 
 async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
     title = f"{MM_MONTHS_WIKI[now.month]}_{to_myanmar_digits(now.day)}"
@@ -490,12 +521,14 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     if cache_data.get("history_date") == date_key and cache_data.get("history_text"):
         return
 
+    # 1. မြန်မာ Wiki မှ အရင်ရှာမည်
     mm_wiki_res = await fetch_myanmar_wiki_event(session, now)
     if mm_wiki_res:
         cache_data["history_date"] = date_key
         cache_data["history_text"] = mm_wiki_res
         return
 
+    # 2. English Wiki မှ ယူ၍ Gemini (သို့) Google Translate ဖြင့် မြန်မာဘာသာသို့ ပြန်မည်
     mm_keywords = ["myanmar", "burma", "rangoon", "yangon", "mandalay", "u thant", "aung san", "bagan"]
     try:
         url = f"https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{now.month:02d}/{now.day:02d}"
@@ -511,7 +544,7 @@ async def fetch_on_this_day(session, now: datetime.datetime):
                 for ev in events:
                     year = ev.get("year", "")
                     text = ev.get("text", "").strip()
-                    if not text or len(text) > 125:
+                    if not text or len(text) > 130:
                         continue
                     if any(k in text.lower() for k in mm_keywords):
                         mm_events.append((year, text, "🇲🇲"))
@@ -521,12 +554,14 @@ async def fetch_on_this_day(session, now: datetime.datetime):
                 pool = mm_events if mm_events else short_world
                 if not pool:
                     ev = events[0]
-                    pool = [(ev.get("year", ""), ev.get("text", "")[:120], "🌍")]
+                    pool = [(ev.get("year", ""), ev.get("text", "")[:125], "🌍")]
 
                 year, en_text, flag = random.choice(pool[:8])
                 my_text = await translate_en_to_my(session, en_text)
-                cache_data["history_date"] = date_key
-                cache_data["history_text"] = f"{flag} **({year})** {my_text}"
+                if my_text:
+                    mm_year = to_myanmar_digits(int(year)) if str(year).isdigit() else str(year)
+                    cache_data["history_date"] = date_key
+                    cache_data["history_text"] = f"{flag} **({mm_year} ခုနှစ်)** {my_text}"
     except Exception:
         pass
 
