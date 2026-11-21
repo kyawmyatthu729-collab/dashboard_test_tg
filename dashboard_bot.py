@@ -2,6 +2,11 @@ import os
 import math
 import json
 import asyncio
+
+# Python 3.14 Event Loop Fix for Pyrogram
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 import datetime
 from threading import Thread
 from flask import Flask
