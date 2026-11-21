@@ -135,6 +135,12 @@ cache_data = {
 app = Client("dashboard_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 owner_only = filters.user(OWNER_ID)
 
+def get_http_session():
+    """Render Server များတွင် SSL Certificate Error မတက်စေရန် Connector ဖန်တီးခြင်း"""
+    connector = aiohttp.TCPConnector(ssl=False)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    return aiohttp.ClientSession(connector=connector, headers=headers)
+
 # ================= USER RESOLVER & CLICKABLE MENTION =================
 def user_link(uid: int, name: str) -> str:
     safe_name = str(name).replace("[", "").replace("]", "")
@@ -347,7 +353,6 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
 
 # ================= MANUAL STATE PERSISTENCE =================
 async def load_state():
-    """Bot စတင်ချိန် / Restart ကျချိန်တွင် Log Channel ထဲရှိ နောက်ဆုံး Backup ဖိုင်မှ ပြန်ဖတ်မည်"""
     global state
     try:
         async for msg in app.get_chat_history(LOG_CHANNEL_ID, limit=15):
@@ -362,7 +367,6 @@ async def load_state():
         print(f"⚠️ Load state error: {e}")
 
 async def save_backup_to_log(caption_text: str):
-    """Manual /backup နှိပ်မှသာ Log Channel ထဲသို့ သိမ်းဆည်းမည်"""
     with open(BACKUP_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     try:
@@ -440,7 +444,6 @@ MM_MONTHS_WIKI = [
 ]
 
 async def translate_en_to_my(session, text: str) -> str:
-    """အင်္ဂလိပ်စာကြောင်းတိုအား မြန်မာဘာသာသို့ အခမဲ့ပြန်ဆိုခြင်း"""
     try:
         t_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={quote(text)}"
         async with session.get(t_url, timeout=10) as resp:
@@ -453,7 +456,6 @@ async def translate_en_to_my(session, text: str) -> str:
     return text
 
 async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
-    """မြန်မာ Wikipedia မှ ယနေ့ရက်စွဲပါ ဖြစ်ရပ်များကို တိုက်ရိုက်ရှာဖွေခြင်း"""
     title = f"{MM_MONTHS_WIKI[now.month]}_{to_myanmar_digits(now.day)}"
     url = f"https://my.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles={quote(title)}&format=json"
     try:
@@ -481,7 +483,6 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     if cache_data.get("history_date") == date_key and cache_data.get("history_text"):
         return
 
-    # 1. ပထမဦးစားပေး - မြန်မာ Wikipedia မှ မြန်မာလို တိုက်ရိုက်ယူမည်
     mm_wiki_res = await fetch_myanmar_wiki_event(session, now)
     if mm_wiki_res:
         cache_data["history_date"] = date_key
@@ -489,7 +490,6 @@ async def fetch_on_this_day(session, now: datetime.datetime):
         print(f"✅ MM Wikipedia History loaded for {date_key}")
         return
 
-    # 2. ဒုတိယဦးစားပေး - English Wikipedia မှ တိုတိုတုတ်တုတ် ဖြစ်ရပ်ယူပြီး မြန်မာဘာသာပြန်မည်
     mm_keywords = ["myanmar", "burma", "rangoon", "yangon", "mandalay", "u thant", "aung san", "bagan"]
     try:
         url = f"https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{now.month:02d}/{now.day:02d}"
@@ -525,67 +525,58 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     except Exception as e:
         print("❌ On This Day fetch err:", e)
 
-# ================= EXTERNAL DATA FETCHERS =================
-async def fetch_regions_weather(session, regions_data) -> str:
-    flat_cities = [c for _, cities in regions_data for c in cities]
-    weather_results = []
-
-    for i in range(0, len(flat_cities), 15):
-        chunk = flat_cities[i:i+15]
-        lats = ",".join(str(c[1]) for c in chunk)
-        lons = ",".join(str(c[2]) for c in chunk)
-        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
-        async with session.get(w_url, timeout=20) as resp:
+# ================= RELIABLE EXTERNAL DATA FETCHERS =================
+async def fetch_single_city_weather(session, name: str, lat: float, lon: float) -> str:
+    """မြို့တစ်မြို့ချင်းစီ၏ ရာသီဥတုကို Parallel ဖြင့် တိကျစွာ ဆွဲယူခြင်း"""
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+    try:
+        async with session.get(url, timeout=12) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                if isinstance(data, list):
-                    weather_results.extend(data)
-                elif isinstance(data, dict) and "current" in data:
-                    weather_results.append(data)
+                cw = data.get("current_weather", {})
+                temp = round(cw.get("temperature", 0))
+                desc = decode_wmo_weather(cw.get("weathercode", 0))
+                return f"• {name}: `{temp}°C` ({desc})"
+    except Exception as e:
+        print(f"Weather err ({name}):", e)
+    return f"• {name}: `-`"
 
-    if len(weather_results) != len(flat_cities):
-        return ""
-
+async def fetch_regions_weather(session, regions_data) -> str:
     sections = []
-    idx = 0
     for region_title, cities in regions_data:
-        lines = [f"**{region_title}**"]
-        for mm_name, _, _ in cities:
-            curr = weather_results[idx].get("current", {})
-            temp = round(curr.get("temperature_2m", 0))
-            desc = decode_wmo_weather(curr.get("weather_code", 0))
-            lines.append(f"• {mm_name}: `{temp}°C` ({desc})")
-            idx += 1
-        sections.append("\n".join(lines))
+        tasks = [fetch_single_city_weather(session, name, lat, lon) for name, lat, lon in cities]
+        city_lines = await asyncio.gather(*tasks)
+        sections.append(f"**{region_title}**\n" + "\n".join(city_lines))
     return "\n\n".join(sections)
 
 async def update_external_data():
-    headers = {"User-Agent": "GroupDashboardBot/1.0 (TelegramBot)"}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with get_http_session() as session:
+        # 0. On This Day History
         await fetch_on_this_day(session, get_now())
 
+        # 1. Weather (Main 15 + Other 30)
         try:
             main_w = await fetch_regions_weather(session, MAIN_REGIONS)
             if main_w:
                 cache_data["weather_main"] = main_w
-            await asyncio.sleep(1)
             other_w = await fetch_regions_weather(session, OTHER_REGIONS)
             if other_w:
                 cache_data["weather_other"] = other_w
-            print("✅ Weather updated successfully.")
+            print("✅ All 45 cities weather updated successfully.")
         except Exception as e:
-            print("❌ Weather batch err:", e)
+            print("❌ Weather update err:", e)
 
+        # 2. Global Gold Spot & Crypto via CryptoCompare (High Rate-Limit, No US Block)
         try:
-            cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,bitcoin,binancecoin,solana,the-open-network&vs_currencies=usd"
-            async with session.get(cg_url, timeout=15) as resp:
+            cc_url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms=PAXG,BTC,BNB,SOL,TON&tsyms=USD"
+            async with session.get(cc_url, timeout=15) as resp:
                 if resp.status == 200:
                     d = await resp.json()
-                    gold = d.get("pax-gold", {}).get("usd")
-                    btc = d.get("bitcoin", {}).get("usd")
-                    bnb = d.get("binancecoin", {}).get("usd")
-                    sol = d.get("solana", {}).get("usd")
-                    ton = d.get("the-open-network", {}).get("usd")
+                    gold = d.get("PAXG", {}).get("USD")
+                    btc = d.get("BTC", {}).get("USD")
+                    bnb = d.get("BNB", {}).get("USD")
+                    sol = d.get("SOL", {}).get("USD")
+                    ton = d.get("TON", {}).get("USD")
 
                     g_str = f"${gold:,.0f}/oz" if gold else "-"
                     btc_str = f"${btc:,.0f}" if btc else "-"
@@ -599,39 +590,46 @@ async def update_external_data():
                         f"• 💎 **SOL:** `{sol_str}` | **TON:** `{ton_str}`"
                     )
                     print("✅ Market prices updated successfully.")
+                else:
+                    print(f"⚠️ CryptoCompare HTTP {resp.status}")
         except Exception as e:
             print("❌ Market fetch err:", e)
 
+        # 3. Football Live Score & Upcoming Fixtures (ESPN)
         leagues = [
             ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
             ("🇪🇸 La Liga", "esp.1"),
-            ("🏆 UCL", "uefa.champions")
+            ("🏆 UCL", "uefa.champions"),
+            ("🇮🇹 Serie A", "ita.1"),
+            ("🇩🇪 Bundesliga", "ger.1")
         ]
         match_lines = []
         for league_name, code in leagues:
             try:
                 f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard"
-                async with session.get(f_url, timeout=10) as resp:
+                async with session.get(f_url, timeout=12) as resp:
                     if resp.status == 200:
                         f_data = await resp.json()
                         for ev in f_data.get("events", []):
                             status_type = ev["status"]["type"]["state"]
-                            if status_type in ["in", "pre"]:
-                                comp = ev["competitions"][0]["competitors"]
-                                home = comp[0]["team"]["abbreviation"]
-                                away = comp[1]["team"]["abbreviation"]
-                                h_score = comp[0].get("score", "0")
-                                a_score = comp[1].get("score", "0")
-                                detail = ev["status"]["type"]["shortDetail"]
+                            comp = ev["competitions"][0]["competitors"]
+                            home = comp[0]["team"]["abbreviation"]
+                            away = comp[1]["team"]["abbreviation"]
+                            h_score = comp[0].get("score", "0")
+                            a_score = comp[1].get("score", "0")
+                            detail = ev["status"]["type"]["shortDetail"]
 
-                                if status_type == "in":
-                                    match_lines.append(f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
-                                elif len(match_lines) < 6:
-                                    match_lines.append(f"⏳ {league_name}: {home} vs {away} ({detail})")
+                            if status_type == "in":
+                                match_lines.insert(0, f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
+                            elif status_type == "pre" and len(match_lines) < 8:
+                                match_lines.append(f"⏳ {league_name}: {home} vs {away} ({detail})")
+                            elif status_type == "post" and len(match_lines) < 5:
+                                match_lines.append(f"✅ {league_name}: {home} {h_score} - {a_score} {away} (FT)")
             except Exception as e:
                 print(f"❌ ESPN err ({code}):", e)
 
         cache_data["football"] = "\n".join(match_lines[:8]) if match_lines else "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽"
+        print(f"✅ Football updated ({len(match_lines)} matches found).")
 
 # ================= DAILY WISHES & TOP 3 ANNOUNCEMENTS =================
 async def send_daily_celebrations(now: datetime.datetime):
@@ -650,8 +648,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                 TARGET_GROUP_ID,
                 f"🎂🎉 **HAPPY BIRTHDAY!** 🎉🎂\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"ဒီနေ့ဟာ {mentions} ရဲ့ မွေးနေ့လေး ဖြစ်ပါတယ်!\n"
-                f"ပျော်ရွှင်စရာ မွေးနေ့လေးဖြစ်ပြီး စိတ်ချမ်းသာ ကိုယ်ကျန်းမာစွာနဲ့ လိုအင်ဆန္ဒတွေ အားလုံး ပြည့်ဝပါစေလို့ Admin Team မှ ဆုတောင်းဂုဏ်ပြုပေးလိုက်ပါတယ် 🥂✨",
+                f"ဒီနေ့ဟာ အဖွဲ့သား {mentions} ရဲ့ မွေးနေ့လေး ဖြစ်ပါတယ်!\n"
+                f"ပျော်ရွှင်စရာ မွေးနေ့လေးဖြစ်ပြီး စိတ်ချမ်းသာ ကိုယ်ကျန်းမာစွာနဲ့ လိုအင်ဆန္ဒတွေ အားလုံး ပြည့်ဝပါစေလို့ Group တစ်ခုလုံးက ဆုတောင်းဂုဏ်ပြုပေးလိုက်ပါတယ်ဗျာ 🥂✨",
                 parse_mode=ParseMode.MARKDOWN,
                 **topic_arg
             )
@@ -669,7 +667,7 @@ async def send_daily_celebrations(now: datetime.datetime):
                     f"💑🥂 **HAPPY ANNIVERSARY!** 🥂💑\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"ဒီနေ့ဟာ **{p1}** ❤️ **{p2}** တို့ရဲ့ {yr_txt} နှစ်ပတ်လည်နေ့လေး ဖြစ်ပါတယ်!\n"
-                    f"နောင်နှစ်ပေါင်းများစွာတိုင်အောင် အခုလိုပဲ ပျော်ပျော်ရွှင်ရွှင် ချစ်ချစ်ခင်ခင်နဲ့ လက်တွဲသွားနိုင်ကြပါစေလို့ Admin Team မှ ဂုဏ်ပြုဆုတောင်းပေးလိုက်ပါတယ် 💖✨",
+                    f"နောင်နှစ်ပေါင်းများစွာတိုင်အောင် အခုလိုပဲ ပျော်ပျော်ရွှင်ရွှင် ချစ်ချစ်ခင်ခင်နဲ့ လက်တွဲသွားနိုင်ကြပါစေလို့ Group တစ်ခုလုံးက ဂုဏ်ပြုဆုတောင်းပေးလိုက်ပါတယ်ဗျာ 💖✨",
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
@@ -689,11 +687,11 @@ async def check_daily_rollover(now: datetime.datetime):
                 topic_arg = {"reply_to_message_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
                 await app.send_message(
                     TARGET_GROUP_ID,
-                    f"🌟 **မနေ့က ({state['current_date']}) Group ထဲမှာ Active ဖြစ်ခဲ့ဆုံးသူများ** 🌟\n"
+                    f"🌟 **မနေ့က ({state['current_date']}) စကားအများဆုံးပြောခဲ့သူများ** 🌟\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{lines}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"ဒီနေ့အတွက် စာရင်းအသစ် ပြန်စပါပြီ! 🎉",
+                    f"ဒီနေ့အတွက် စာရင်းအသစ် ပြန်စပါပြီဗျာ! 🎉",
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
@@ -763,7 +761,7 @@ def render_page(page_idx: int) -> str:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 **Global Gold & Crypto Prices**\n"
             f"{cache_data['market']}\n\n"
-            f"⚽ **Football Live & Upcoming**\n"
+            f"⚽ **Football Live & Scores**\n"
             f"{cache_data['football']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔄 _စာမျက်နှာ အလိုအလျောက် ပြောင်းလဲပြသနေသည်_"
