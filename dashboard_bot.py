@@ -47,10 +47,10 @@ DEFAULT_STATE = {
     "pin_msg_id": None,
     "page_index": 0,
     "current_date": "",
-    "wished_date": "",     # မွေးနေ့နှင့် နှစ်ပတ်လည် ဂုဏ်ပြုစာ ပို့ပြီးသား ရက်စွဲမှတ်ရန်
-    "chat_counts": {},     # {"uid": {"name": "Mg Mg", "username": "mgmg", "count": 10}}
-    "birthdays": [],       # [{"uid": 123456, "name": "Mg Mg", "username": "mgmg", "day": 25, "month": "Dec"}]
-    "relationships": []    # [{"uid1": 111, "name1": "MgMg", "user1": "mgmg", "uid2": 222, "name2": "SuSu", "user2": "susu", "day": 14, "month": "Feb", "year": 2025}]
+    "wished_date": "",
+    "chat_counts": {},
+    "birthdays": [],
+    "relationships": []
 }
 
 state = DEFAULT_STATE.copy()
@@ -123,8 +123,8 @@ OTHER_REGIONS = [
 ]
 
 cache_data = {
-    "weather_main": "Loading main cities...",
-    "weather_other": "Loading other cities...",
+    "weather_main": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
+    "weather_other": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "market": "• 🪙 **Gold Spot:** `-`\n• **BTC:** `-` | **BNB:** `-`\n• **SOL:** `-` | **TON:** `-`",
     "football": "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽"
 }
@@ -138,12 +138,10 @@ def user_link(uid: int, name: str) -> str:
     return f"[{safe_name}](tg://user?id={uid})"
 
 async def resolve_user_target(target: str):
-    """@username သို့မဟုတ် User ID မှတစ်ဆင့် User ID, Account Name နှင့် Username ကို ဆွဲထုတ်ပေးမည်"""
     clean_target = target.strip()
     if clean_target.startswith("@"):
         clean_target = clean_target[1:]
 
-    # 1. Cache (Group ထဲ စကားပြောဖူးသူများ) ထဲတွင် အရင်ရှာမည်
     if clean_target.isdigit():
         uid_str = clean_target
         if uid_str in state["chat_counts"]:
@@ -154,7 +152,6 @@ async def resolve_user_target(target: str):
             if info.get("username", "").lower() == clean_target.lower():
                 return int(uid_str), info["name"], info.get("username", "")
 
-    # 2. Telegram API (get_users) မှ တိုက်ရိုက်ဆွဲယူမည်
     try:
         query_val = int(clean_target) if clean_target.isdigit() else clean_target
         u = await app.get_users(query_val)
@@ -345,60 +342,86 @@ def get_anniversary_line(now: datetime.datetime) -> str:
         pairs.append(f"**{p1}** ❤️ **{p2}**{yr_txt}")
     return f"💑 **Happy Anniversary:** 🎉 {', '.join(pairs)} 🥂"
 
-# ================= AUTO EXTERNAL DATA FETCHERS =================
+# ================= AUTO EXTERNAL DATA FETCHERS (US/GLOBAL SAFE) =================
 async def fetch_regions_weather(session, regions_data) -> str:
     flat_cities = [c for _, cities in regions_data for c in cities]
-    lats = ",".join(str(c[1]) for c in flat_cities)
-    lons = ",".join(str(c[2]) for c in flat_cities)
-    w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
-    async with session.get(w_url, timeout=15) as resp:
-        if resp.status == 200:
-            results = await resp.json()
-            sections = []
-            idx = 0
-            for region_title, cities in regions_data:
-                lines = [f"**{region_title}**"]
-                for mm_name, _, _ in cities:
-                    curr = results[idx].get("current", {})
-                    temp = round(curr.get("temperature_2m", 0))
-                    desc = decode_wmo_weather(curr.get("weather_code", 0))
-                    lines.append(f"• {mm_name}: `{temp}°C` ({desc})")
-                    idx += 1
-                sections.append("\n".join(lines))
-            return "\n\n".join(sections)
-    return ""
+    weather_results = []
+
+    # Open-Meteo ကို ၁၅ မြို့စီ ခွဲပြီး Batch ဆွဲမည်
+    for i in range(0, len(flat_cities), 15):
+        chunk = flat_cities[i:i+15]
+        lats = ",".join(str(c[1]) for c in chunk)
+        lons = ",".join(str(c[2]) for c in chunk)
+        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
+        async with session.get(w_url, timeout=20) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if isinstance(data, list):
+                    weather_results.extend(data)
+                elif isinstance(data, dict) and "current" in data:
+                    weather_results.append(data)
+
+    if len(weather_results) != len(flat_cities):
+        print(f"⚠️ Weather count mismatch: got {len(weather_results)}, expected {len(flat_cities)}")
+        return ""
+
+    sections = []
+    idx = 0
+    for region_title, cities in regions_data:
+        lines = [f"**{region_title}**"]
+        for mm_name, _, _ in cities:
+            curr = weather_results[idx].get("current", {})
+            temp = round(curr.get("temperature_2m", 0))
+            desc = decode_wmo_weather(curr.get("weather_code", 0))
+            lines.append(f"• {mm_name}: `{temp}°C` ({desc})")
+            idx += 1
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
 
 async def update_external_data():
-    async with aiohttp.ClientSession() as session:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        # 1. Weather (Main 15 + Other 30)
         try:
             main_w = await fetch_regions_weather(session, MAIN_REGIONS)
             if main_w:
                 cache_data["weather_main"] = main_w
+            await asyncio.sleep(1)
             other_w = await fetch_regions_weather(session, OTHER_REGIONS)
             if other_w:
                 cache_data["weather_other"] = other_w
+            print("✅ Weather updated successfully.")
         except Exception as e:
-            print("Weather batch err:", e)
+            print("❌ Weather batch err:", e)
 
+        # 2. Global Gold Spot ($/oz) & Crypto (BTC, BNB, SOL, TON) via CoinGecko (No US Block)
         try:
-            symbols = '["PAXGUSDT","BTCUSDT","BNBUSDT","SOLUSDT","TONUSDT"]'
-            c_url = f"https://api.binance.com/api/v3/ticker/price?symbols={symbols}"
-            async with session.get(c_url, timeout=10) as resp:
+            cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,bitcoin,binancecoin,solana,the-open-network&vs_currencies=usd"
+            async with session.get(cg_url, timeout=15) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    prices = {}
-                    for item in data:
-                        sym = item["symbol"].replace("USDT", "")
-                        val = float(item["price"])
-                        prices[sym] = f"${val:,.0f}" if val >= 1000 else f"${val:,.2f}"
-                    cache_data["market"] = (
-                        f"• 🪙 **Gold Spot:** `{prices.get('PAXG', '-')}/oz`\n"
-                        f"• ₿ **BTC:** `{prices.get('BTC', '-')}` | **BNB:** `{prices.get('BNB', '-')}`\n"
-                        f"• 💎 **SOL:** `{prices.get('SOL', '-')}` | **TON:** `{prices.get('TON', '-')}`"
-                    )
-        except Exception as e:
-            print("Market fetch err:", e)
+                    d = await resp.json()
+                    gold = d.get("pax-gold", {}).get("usd")
+                    btc = d.get("bitcoin", {}).get("usd")
+                    bnb = d.get("binancecoin", {}).get("usd")
+                    sol = d.get("solana", {}).get("usd")
+                    ton = d.get("the-open-network", {}).get("usd")
 
+                    g_str = f"${gold:,.0f}/oz" if gold else "-"
+                    btc_str = f"${btc:,.0f}" if btc else "-"
+                    bnb_str = f"${bnb:,.0f}" if bnb else "-"
+                    sol_str = f"${sol:,.2f}" if sol else "-"
+                    ton_str = f"${ton:,.2f}" if ton else "-"
+
+                    cache_data["market"] = (
+                        f"• 🪙 **Gold Spot:** `{g_str}`\n"
+                        f"• ₿ **BTC:** `{btc_str}` | **BNB:** `{bnb_str}`\n"
+                        f"• 💎 **SOL:** `{sol_str}` | **TON:** `{ton_str}`"
+                    )
+                    print("✅ Market prices updated successfully.")
+        except Exception as e:
+            print("❌ Market fetch err:", e)
+
+        # 3. Football Live Score (ESPN)
         leagues = [
             ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
             ("🇪🇸 La Liga", "esp.1"),
@@ -426,13 +449,12 @@ async def update_external_data():
                                 elif len(match_lines) < 6:
                                     match_lines.append(f"⏳ {league_name}: {home} vs {away} ({detail})")
             except Exception as e:
-                print(f"ESPN err ({code}):", e)
+                print(f"❌ ESPN err ({code}):", e)
 
         cache_data["football"] = "\n".join(match_lines[:8]) if match_lines else "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽"
 
 # ================= DAILY WISHES & TOP 3 ANNOUNCEMENTS =================
 async def send_daily_celebrations(now: datetime.datetime):
-    """မွေးနေ့ရှင်နှင့် နှစ်ပတ်လည်အတွဲများ ရှိပါက Mention ဖြင့် ဂုဏ်ပြုစာ ပို့ပေးမည်"""
     today_key = now.strftime("%Y-%m-%d")
     if state.get("wished_date") == today_key:
         return
@@ -441,7 +463,6 @@ async def send_daily_celebrations(now: datetime.datetime):
     today_bdays = get_today_birthdays(now)
     today_annis = get_today_anniversaries(now)
 
-    # 1. မွေးနေ့ဂုဏ်ပြုစာ
     if today_bdays:
         mentions = ", ".join([f"**{user_link(b['uid'], b['name'])}**" for b in today_bdays])
         try:
@@ -457,7 +478,6 @@ async def send_daily_celebrations(now: datetime.datetime):
         except Exception as e:
             print("Bday wish err:", e)
 
-    # 2. နှစ်ပတ်လည် ဂုဏ်ပြုစာ
     if today_annis:
         for yrs, r in today_annis:
             p1 = user_link(r["uid1"], r["name1"])
@@ -506,7 +526,6 @@ async def check_daily_rollover(now: datetime.datetime):
     elif not state["current_date"]:
         state["current_date"] = today_key
 
-    # နေ့သစ်အတွက် မွေးနေ့/နှစ်ပတ်လည် ဂုဏ်ပြုစာ စစ်ဆေးပေးပို့မည်
     await send_daily_celebrations(now)
 
 # ================= AUTO-ROTATING PAGE RENDERER =================
@@ -687,225 +706,3 @@ async def delete_birthday(client, message):
     if len(parts) < 2:
         return await message.reply("ဖျက်လိုသော နံပါတ်စဉ်၊ `@username` သို့မဟုတ် နာမည်ထည့်ပါ။ ဥပမာ- `/delhbd @mgmg`")
     query = parts[1].strip()
-    clean_q = query[1:].lower() if query.startswith("@") else query.lower()
-
-    if query.isdigit() and 1 <= int(query) <= len(state["birthdays"]):
-        removed = state["birthdays"].pop(int(query) - 1)
-        await save_state()
-        return await message.reply(f"🗑️ **{removed['name']}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
-
-    before_len = len(state["birthdays"])
-    state["birthdays"] = [
-        b for b in state["birthdays"]
-        if b["name"].lower() != clean_q
-        and str(b["uid"]) != clean_q
-        and b.get("username", "").lower() != clean_q
-    ]
-    if len(state["birthdays"]) == before_len:
-        return await message.reply(f"❌ `{query}` ဖြင့် မွေးနေ့စာရင်း မတွေ့ပါ။ (`/hbdlist` ဖြင့် ပြန်စစ်ပါ)")
-    await save_state()
-    await message.reply(f"🗑️ **{query}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
-
-@app.on_message(filters.command("backuphbd") & owner_only)
-async def backup_birthdays(client, message):
-    if not state["birthdays"]:
-        return await message.reply("🎂 Backup ထုတ်ရန် မွေးနေ့စာရင်း မရှိသေးပါ။")
-    with open(HBD_BACKUP_FILE, "w", encoding="utf-8") as f:
-        json.dump(state["birthdays"], f, ensure_ascii=False, indent=2)
-    await message.reply_document(
-        document=HBD_BACKUP_FILE,
-        caption=f"🎂 မွေးနေ့စာရင်း Backup ({len(state['birthdays'])} ဦး)\nပြန်သွင်းလိုပါက ဒီဖိုင်ကို Reply ပြန်ပြီး `/restorehbd` ရိုက်ပါ။"
-    )
-    os.remove(HBD_BACKUP_FILE)
-
-@app.on_message(filters.command("restorehbd") & owner_only)
-async def restore_birthdays(client, message):
-    replied = message.reply_to_message
-    if not replied or not replied.document or not replied.document.file_name.endswith(".json"):
-        return await message.reply("⚠️ `birthdays_backup.json` ဖိုင်ကို Reply ပြန်ပြီး `/restorehbd` လို့ ရိုက်ပါ။")
-    path = await app.download_media(replied)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            raise ValueError("Invalid JSON format")
-        state["birthdays"] = data
-        await save_state()
-        await message.reply(f"✅ မွေးနေ့စာရင်း **{len(data)} ဦး** ကို အောင်မြင်စွာ Restore လုပ်ပြီးပါပြီ။")
-    except Exception as e:
-        await message.reply(f"❌ ဖိုင်ဖတ်ရာတွင် အမှားရှိနေပါသည်: `{e}`")
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
-
-# ================= OWNER-ONLY RELATIONSHIP COMMANDS =================
-@app.on_message(filters.command("addrs") & owner_only)
-async def add_relationship(client, message):
-    parts = message.text.split()
-    if len(parts) < 6:
-        return await message.reply(
-            "📌 **အတွဲစာရင်း ထည့်သွင်းနည်း:**\n"
-            "`/addrs 14 Feb 2025 @user1 @user2`\n"
-            "_(စတွဲတဲ့ရက် လ ခုနှစ် + `@username` သို့မဟုတ် User ID ၂ ခု)_"
-        )
-    day, month, year = parts[1], parts[2].capitalize()[:3], parts[3]
-    target1, target2 = parts[4], parts[5]
-
-    if month not in MONTH_MAP or not day.isdigit() or not year.isdigit():
-        return await message.reply("❌ ရက်စွဲပုံစံ မှားယွင်းနေပါသည်။ ဥပမာ- `14 Feb 2025`")
-
-    uid1, name1, user1 = await resolve_user_target(target1)
-    if not uid1:
-        return await message.reply(f"❌ `{target1}` အကောင့်ကို ရှာမတွေ့ပါ။ `@username` သို့မဟုတ် User ID အမှန်ထည့်ပါ။")
-
-    uid2, name2, user2 = await resolve_user_target(target2)
-    if not uid2:
-        return await message.reply(f"❌ `{target2}` အကောင့်ကို ရှာမတွေ့ပါ။ `@username` သို့မဟုတ် User ID အမှန်ထည့်ပါ။")
-
-    state["relationships"] = [
-        r for r in state["relationships"]
-        if int(r["uid1"]) not in (uid1, uid2) and int(r["uid2"]) not in (uid1, uid2)
-    ]
-    state["relationships"].append({
-        "uid1": uid1, "name1": name1, "user1": user1,
-        "uid2": uid2, "name2": name2, "user2": user2,
-        "day": int(day), "month": month, "year": int(year)
-    })
-    await save_state()
-    p1 = user_link(uid1, name1)
-    p2 = user_link(uid2, name2)
-    await message.reply(f"💑 {p1} ❤️ {p2} အတွဲကို (`{day} {month} {year}`) မှစတင်၍ စာရင်းသွင်းပြီးပါပြီ။", parse_mode=ParseMode.MARKDOWN)
-
-@app.on_message(filters.command("rslist") & owner_only)
-async def list_relationships(client, message):
-    if not state["relationships"]:
-        return await message.reply("💑 အတွဲစာရင်းထဲတွင် မည်သူမျှ မရှိသေးပါ။")
-    now = get_now().date()
-    lines = ["💑 **Group အတွဲစာရင်းများ**", "━━━━━━━━━━━━━━━━━━━━━━"]
-    for i, r in enumerate(state["relationships"], 1):
-        p1 = user_link(r["uid1"], r["name1"])
-        p2 = user_link(r["uid2"], r["name2"])
-        start_d = datetime.date(int(r["year"]), MONTH_MAP[r["month"]], int(r["day"]))
-        days_together = max(0, (now - start_d).days)
-        lines.append(f"{i}. {p1} ❤️ {p2} — `{r['day']} {r['month']} {r['year']}` ({days_together} ရက်)")
-    lines.append("\n_(ဖြုတ်လိုပါက `/delrs နံပါတ်` သို့မဟုတ် `/delrs @username` ရိုက်ပါ)_")
-    await message.reply("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-@app.on_message(filters.command("delrs") & owner_only)
-async def delete_relationship(client, message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await message.reply("ဖြုတ်လိုသော နံပါတ်စဉ်၊ `@username` သို့မဟုတ် နာမည်ထည့်ပါ။ ဥပမာ- `/delrs @mgmg`")
-    query = parts[1].strip()
-    clean_q = query[1:].lower() if query.startswith("@") else query.lower()
-
-    if query.isdigit() and 1 <= int(query) <= len(state["relationships"]):
-        removed = state["relationships"].pop(int(query) - 1)
-        await save_state()
-        return await message.reply(f"💔 **{removed['name1']} & {removed['name2']}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
-
-    kept = []
-    removed_pairs = []
-    for r in state["relationships"]:
-        match_p1 = (
-            r["name1"].lower() == clean_q
-            or str(r["uid1"]) == clean_q
-            or r.get("user1", "").lower() == clean_q
-        )
-        match_p2 = (
-            r["name2"].lower() == clean_q
-            or str(r["uid2"]) == clean_q
-            or r.get("user2", "").lower() == clean_q
-        )
-        if match_p1 or match_p2:
-            removed_pairs.append(f"{r['name1']} & {r['name2']}")
-        else:
-            kept.append(r)
-
-    if not removed_pairs:
-        return await message.reply(f"❌ `{query}` ဖြင့် အတွဲစာရင်း မတွေ့ပါ။ (`/rslist` ဖြင့် ပြန်စစ်ပါ)")
-
-    state["relationships"] = kept
-    await save_state()
-    await message.reply(f"💔 **{', '.join(removed_pairs)}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
-
-@app.on_message(filters.command("backuprs") & owner_only)
-async def backup_relationships(client, message):
-    if not state["relationships"]:
-        return await message.reply("💑 Backup ထုတ်ရန် အတွဲစာရင်း မရှိသေးပါ။")
-    with open(RS_BACKUP_FILE, "w", encoding="utf-8") as f:
-        json.dump(state["relationships"], f, ensure_ascii=False, indent=2)
-    await message.reply_document(
-        document=RS_BACKUP_FILE,
-        caption=f"💑 အတွဲစာရင်း Backup ({len(state['relationships'])} တွဲ)\nပြန်သွင်းလိုပါက ဒီဖိုင်ကို Reply ပြန်ပြီး `/restorers` ရိုက်ပါ။"
-    )
-    os.remove(RS_BACKUP_FILE)
-
-@app.on_message(filters.command("restorers") & owner_only)
-async def restore_relationships(client, message):
-    replied = message.reply_to_message
-    if not replied or not replied.document or not replied.document.file_name.endswith(".json"):
-        return await message.reply("⚠️ `relationships_backup.json` ဖိုင်ကို Reply ပြန်ပြီး `/restorers` လို့ ရိုက်ပါ။")
-    path = await app.download_media(replied)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            raise ValueError("Invalid JSON format")
-        state["relationships"] = data
-        await save_state()
-        await message.reply(f"✅ အတွဲစာရင်း **{len(data)} တွဲ** ကို အောင်မြင်စွာ Restore လုပ်ပြီးပါပြီ။")
-    except Exception as e:
-        await message.reply(f"❌ ဖိုင်ဖတ်ရာတွင် အမှားရှိနေပါသည်: `{e}`")
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
-
-# ================= MESSAGE COUNTER & AUTO-PROFILE SYNC =================
-@app.on_message(filters.chat(TARGET_GROUP_ID) & ~filters.service)
-async def count_messages(client, message):
-    if not message.from_user or message.from_user.is_bot:
-        return
-    uid_int = message.from_user.id
-    uid = str(uid_int)
-    name = message.from_user.first_name or "User"
-    uname = message.from_user.username or ""
-
-    if uid not in state["chat_counts"]:
-        state["chat_counts"][uid] = {"name": name, "username": uname, "count": 0}
-    state["chat_counts"][uid]["name"] = name
-    state["chat_counts"][uid]["username"] = uname
-    state["chat_counts"][uid]["count"] += 1
-
-    # အဖွဲ့သား Name သို့မဟုတ် Username ပြောင်းသွားပါက အလိုအလျောက် Sync လုပ်ပေးမည်
-    for b in state["birthdays"]:
-        if int(b["uid"]) == uid_int:
-            b["name"] = name
-            b["username"] = uname
-    for r in state["relationships"]:
-        if int(r["uid1"]) == uid_int:
-            r["name1"] = name
-            r["user1"] = uname
-        if int(r["uid2"]) == uid_int:
-            r["name2"] = name
-            r["user2"] = uname
-
-# ================= SCHEDULER & MAIN =================
-async def start_scheduler():
-    scheduler = AsyncIOScheduler(timezone=MM_TZ)
-    scheduler.add_job(rotate_board_page, "interval", minutes=2)
-    scheduler.add_job(update_external_data, "interval", minutes=15)
-    scheduler.add_job(save_state, "interval", minutes=30)
-    scheduler.start()
-
-async def main():
-    Thread(target=run_flask, daemon=True).start()
-    await app.start()
-    await load_state()
-    await update_external_data()
-    await start_scheduler()
-    print("🚀 Owner-Controlled Billboard with Username/ID Sync & Celebrations Started!")
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    loop.run_until_complete(main())
