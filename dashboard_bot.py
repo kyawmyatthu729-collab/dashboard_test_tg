@@ -129,16 +129,19 @@ cache_data = {
     "market": "• 🪙 **Gold Spot:** `-`\n• **BTC:** `-` | **BNB:** `-`\n• **SOL:** `-` | **TON:** `-`",
     "football": "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽",
     "history_date": "",
-    "history_text": ""
+    "history_text": "",
+    "debug_log": "Not run yet"
 }
 
 app = Client("dashboard_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 owner_only = filters.user(OWNER_ID)
 
 def get_http_session():
-    """Render Server များတွင် SSL Certificate Error မတက်စေရန် Connector ဖန်တီးခြင်း"""
-    connector = aiohttp.TCPConnector(ssl=False)
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    connector = aiohttp.TCPConnector(ssl=False, limit=10)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
     return aiohttp.ClientSession(connector=connector, headers=headers)
 
 # ================= USER RESOLVER & CLICKABLE MENTION =================
@@ -451,8 +454,8 @@ async def translate_en_to_my(session, text: str) -> str:
                 data = await resp.json()
                 translated = "".join(part[0] for part in data[0] if part[0])
                 return translated.strip()
-    except Exception as e:
-        print("Translate err:", e)
+    except Exception:
+        pass
     return text
 
 async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
@@ -474,8 +477,8 @@ async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
                             chosen = random.choice(lines)
                             chosen = re.sub(r"^\*\s*", "", chosen)
                             return f"🇲🇲 {chosen}"
-    except Exception as e:
-        print("MM Wiki err:", e)
+    except Exception:
+        pass
     return ""
 
 async def fetch_on_this_day(session, now: datetime.datetime):
@@ -487,7 +490,6 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     if mm_wiki_res:
         cache_data["history_date"] = date_key
         cache_data["history_text"] = mm_wiki_res
-        print(f"✅ MM Wikipedia History loaded for {date_key}")
         return
 
     mm_keywords = ["myanmar", "burma", "rangoon", "yangon", "mandalay", "u thant", "aung san", "bagan"]
@@ -521,81 +523,133 @@ async def fetch_on_this_day(session, now: datetime.datetime):
                 my_text = await translate_en_to_my(session, en_text)
                 cache_data["history_date"] = date_key
                 cache_data["history_text"] = f"{flag} **({year})** {my_text}"
-                print(f"✅ Translated History updated for {date_key}")
-    except Exception as e:
-        print("❌ On This Day fetch err:", e)
+    except Exception:
+        pass
 
-# ================= RELIABLE EXTERNAL DATA FETCHERS =================
-async def fetch_single_city_weather(session, name: str, lat: float, lon: float) -> str:
-    """မြို့တစ်မြို့ချင်းစီ၏ ရာသီဥတုကို Parallel ဖြင့် တိကျစွာ ဆွဲယူခြင်း"""
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+# ================= DUAL-FALLBACK EXTERNAL DATA FETCHERS =================
+async def fetch_single_city_weather(session, name: str, lat: float, lon: float) -> tuple:
+    # Primary: Open-Meteo
+    url1 = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
     try:
-        async with session.get(url, timeout=12) as resp:
+        async with session.get(url1, timeout=10) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 cw = data.get("current_weather", {})
-                temp = round(cw.get("temperature", 0))
-                desc = decode_wmo_weather(cw.get("weathercode", 0))
-                return f"• {name}: `{temp}°C` ({desc})"
-    except Exception as e:
-        print(f"Weather err ({name}):", e)
-    return f"• {name}: `-`"
+                if "temperature" in cw:
+                    temp = round(cw["temperature"])
+                    desc = decode_wmo_weather(cw.get("weathercode", 0))
+                    return True, f"• {name}: `{temp}°C` ({desc})"
+    except Exception:
+        pass
 
-async def fetch_regions_weather(session, regions_data) -> str:
+    # Fallback: wttr.in JSON API
+    url2 = f"https://wttr.in/{lat},{lon}?format=j1"
+    try:
+        async with session.get(url2, timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                curr = data["current_condition"][0]
+                temp = curr["temp_C"]
+                return True, f"• {name}: `{temp}°C` (🌤️ ပုံမှန်)"
+    except Exception:
+        pass
+
+    return False, f"• {name}: `-`"
+
+async def fetch_regions_weather(session, regions_data) -> tuple:
     sections = []
+    ok_count = 0
     for region_title, cities in regions_data:
         tasks = [fetch_single_city_weather(session, name, lat, lon) for name, lat, lon in cities]
-        city_lines = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks)
+        city_lines = []
+        for is_ok, line in results:
+            if is_ok:
+                ok_count += 1
+            city_lines.append(line)
         sections.append(f"**{region_title}**\n" + "\n".join(city_lines))
-    return "\n\n".join(sections)
+    return ok_count, "\n\n".join(sections)
 
-async def update_external_data():
+async def update_external_data() -> str:
+    logs = []
     async with get_http_session() as session:
-        # 0. On This Day History
+        # 0. History
         await fetch_on_this_day(session, get_now())
+        logs.append(f"📜 History: {'OK' if cache_data['history_text'] else 'Empty'}")
 
-        # 1. Weather (Main 15 + Other 30)
+        # 1. Weather
         try:
-            main_w = await fetch_regions_weather(session, MAIN_REGIONS)
-            if main_w:
+            ok1, main_w = await fetch_regions_weather(session, MAIN_REGIONS)
+            if ok1 > 0:
                 cache_data["weather_main"] = main_w
-            other_w = await fetch_regions_weather(session, OTHER_REGIONS)
-            if other_w:
+            ok2, other_w = await fetch_regions_weather(session, OTHER_REGIONS)
+            if ok2 > 0:
                 cache_data["weather_other"] = other_w
-            print("✅ All 45 cities weather updated successfully.")
+            logs.append(f"🌤 Weather: {ok1 + ok2}/45 cities OK")
         except Exception as e:
-            print("❌ Weather update err:", e)
+            logs.append(f"🌤 Weather ERR: {e}")
 
-        # 2. Global Gold Spot & Crypto via CryptoCompare (High Rate-Limit, No US Block)
+        # 2. Gold & Crypto (Primary: CryptoCompare | Fallback: Kraken + KuCoin)
+        market_ok = False
         try:
             cc_url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms=PAXG,BTC,BNB,SOL,TON&tsyms=USD"
-            async with session.get(cc_url, timeout=15) as resp:
+            async with session.get(cc_url, timeout=12) as resp:
                 if resp.status == 200:
                     d = await resp.json()
-                    gold = d.get("PAXG", {}).get("USD")
-                    btc = d.get("BTC", {}).get("USD")
-                    bnb = d.get("BNB", {}).get("USD")
-                    sol = d.get("SOL", {}).get("USD")
-                    ton = d.get("TON", {}).get("USD")
+                    if "BTC" in d:
+                        gold = d.get("PAXG", {}).get("USD")
+                        btc = d.get("BTC", {}).get("USD")
+                        bnb = d.get("BNB", {}).get("USD")
+                        sol = d.get("SOL", {}).get("USD")
+                        ton = d.get("TON", {}).get("USD")
 
-                    g_str = f"${gold:,.0f}/oz" if gold else "-"
-                    btc_str = f"${btc:,.0f}" if btc else "-"
-                    bnb_str = f"${bnb:,.0f}" if bnb else "-"
-                    sol_str = f"${sol:,.2f}" if sol else "-"
-                    ton_str = f"${ton:,.2f}" if ton else "-"
+                        g_str = f"${gold:,.0f}/oz" if gold else "-"
+                        btc_str = f"${btc:,.0f}" if btc else "-"
+                        bnb_str = f"${bnb:,.0f}" if bnb else "-"
+                        sol_str = f"${sol:,.2f}" if sol else "-"
+                        ton_str = f"${ton:,.2f}" if ton else "-"
 
-                    cache_data["market"] = (
-                        f"• 🪙 **Gold Spot:** `{g_str}`\n"
-                        f"• ₿ **BTC:** `{btc_str}` | **BNB:** `{bnb_str}`\n"
-                        f"• 💎 **SOL:** `{sol_str}` | **TON:** `{ton_str}`"
-                    )
-                    print("✅ Market prices updated successfully.")
+                        cache_data["market"] = (
+                            f"• 🪙 **Gold Spot:** `{g_str}`\n"
+                            f"• ₿ **BTC:** `{btc_str}` | **BNB:** `{bnb_str}`\n"
+                            f"• 💎 **SOL:** `{sol_str}` | **TON:** `{ton_str}`"
+                        )
+                        market_ok = True
+                        logs.append("💹 Market (CryptoCompare): OK")
                 else:
-                    print(f"⚠️ CryptoCompare HTTP {resp.status}")
+                    logs.append(f"💹 CryptoCompare HTTP {resp.status}")
         except Exception as e:
-            print("❌ Market fetch err:", e)
+            logs.append(f"💹 CryptoCompare ERR: {e}")
 
-        # 3. Football Live Score & Upcoming Fixtures (ESPN)
+        if not market_ok:
+            # Backup: Kraken Public Ticker (US-Based, Zero Block)
+            try:
+                k_url = "https://api.kraken.com/0/public/Ticker?pair=PAXGUSD,XBTUSD,SOLUSD,TONUSD"
+                async with session.get(k_url, timeout=12) as resp:
+                    if resp.status == 200:
+                        kd = await resp.json()
+                        res = kd.get("result", {})
+                        gold = float(res.get("PAXGUSD", {}).get("c", [0])[0])
+                        btc = float(res.get("XXBTZUSD", res.get("XBTUSD", {})).get("c", [0])[0])
+                        sol = float(res.get("SOLUSD", {}).get("c", [0])[0])
+                        ton = float(res.get("TONUSD", {}).get("c", [0])[0])
+
+                        g_str = f"${gold:,.0f}/oz" if gold else "-"
+                        btc_str = f"${btc:,.0f}" if btc else "-"
+                        sol_str = f"${sol:,.2f}" if sol else "-"
+                        ton_str = f"${ton:,.2f}" if ton else "-"
+
+                        cache_data["market"] = (
+                            f"• 🪙 **Gold Spot:** `{g_str}`\n"
+                            f"• ₿ **BTC:** `{btc_str}` | **SOL:** `{sol_str}`\n"
+                            f"• 💎 **TON:** `{ton_str}`"
+                        )
+                        market_ok = True
+                        logs.append("💹 Market (Kraken Backup): OK")
+            except Exception as e:
+                logs.append(f"💹 Kraken Backup ERR: {e}")
+
+        # 3. Football Live & Scores (ESPN)
         leagues = [
             ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
             ("🇪🇸 La Liga", "esp.1"),
@@ -607,7 +661,7 @@ async def update_external_data():
         for league_name, code in leagues:
             try:
                 f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard"
-                async with session.get(f_url, timeout=12) as resp:
+                async with session.get(f_url, timeout=10) as resp:
                     if resp.status == 200:
                         f_data = await resp.json()
                         for ev in f_data.get("events", []):
@@ -625,11 +679,16 @@ async def update_external_data():
                                 match_lines.append(f"⏳ {league_name}: {home} vs {away} ({detail})")
                             elif status_type == "post" and len(match_lines) < 5:
                                 match_lines.append(f"✅ {league_name}: {home} {h_score} - {a_score} {away} (FT)")
-            except Exception as e:
-                print(f"❌ ESPN err ({code}):", e)
+            except Exception:
+                pass
 
         cache_data["football"] = "\n".join(match_lines[:8]) if match_lines else "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽"
-        print(f"✅ Football updated ({len(match_lines)} matches found).")
+        logs.append(f"⚽ Football: {len(match_lines)} matches OK")
+
+    summary = "\n".join(logs)
+    cache_data["debug_log"] = summary
+    print(summary)
+    return summary
 
 # ================= DAILY WISHES & TOP 3 ANNOUNCEMENTS =================
 async def send_daily_celebrations(now: datetime.datetime):
@@ -653,8 +712,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                 parse_mode=ParseMode.MARKDOWN,
                 **topic_arg
             )
-        except Exception as e:
-            print("Bday wish err:", e)
+        except Exception:
+            pass
 
     if today_annis:
         for yrs, r in today_annis:
@@ -671,8 +730,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
-            except Exception as e:
-                print("Anni wish err:", e)
+            except Exception:
+                pass
 
     state["wished_date"] = today_key
 
@@ -695,8 +754,8 @@ async def check_daily_rollover(now: datetime.datetime):
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
-            except Exception as e:
-                print("Yesterday summary err:", e)
+            except Exception:
+                pass
         state["chat_counts"] = {}
         state["current_date"] = today_key
     elif not state["current_date"]:
@@ -790,8 +849,8 @@ async def spawn_new_board():
     )
     try:
         await sent.pin(disable_notification=True)
-    except Exception as e:
-        print("Pin err:", e)
+    except Exception:
+        pass
 
     state["pin_msg_id"] = sent.id
 
@@ -814,10 +873,7 @@ async def rotate_board_page():
         await asyncio.sleep(e.value)
     except Exception as e:
         if "MESSAGE_ID_INVALID" in str(e) or "Message to edit not found" in str(e):
-            print("⚠️ Pinned board was deleted! Re-spawning in target topic...")
             await spawn_new_board()
-        else:
-            print("Rotate board err:", e)
 
 # ================= OWNER-ONLY COMMANDS =================
 @app.on_message(filters.command(["board", "initdash"]) & owner_only)
@@ -830,6 +886,19 @@ async def cmd_spawn_board(client, message):
             pass
     else:
         await message.reply("✅ သတ်မှတ်ထားသော Topic အခန်းထဲတွင် Board အသစ် ထုတ်ပြီး Pin တင်လိုက်ပါပြီ။")
+
+# API Diagnostic & Force Refresh Command (/testapi)
+@app.on_message(filters.command("testapi") & owner_only)
+async def cmd_test_api(client, message):
+    wait_msg = await message.reply("⏳ API များအားလုံးကို စမ်းသပ်ဆွဲယူနေပါသည်...")
+    status_report = await update_external_data()
+    await wait_msg.edit_text(
+        f"🔍 **API Diagnostic Report**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{status_report}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"**Market Preview:**\n{cache_data['market']}"
+    )
 
 # 1. Manual Unified Backup & Restore (/backup & /restore)
 @app.on_message(filters.command(["backup", "backuphbd", "backuprs"]) & owner_only)
@@ -887,7 +956,7 @@ async def add_birthday(client, message):
         day, month, target = parts[1], parts[2].capitalize()[:3], parts[3]
         uid, name, uname = await resolve_user_target(target)
         if not uid:
-            return await message.reply(f"❌ `{target}` အကောင့်ကို ရှာမတွေ့ပါ။ `@username` မှန်ကန်ကြောင်း စစ်ဆေးပါ (သို့) ထိုသူ၏ စာကို Reply ပြန်ပြီး `/addhbd {day} {month}` ရိုက်ပါ။")
+            return await message.reply(f"❌ `{target}` အကောင့်ကို ရှာမတွေ့ပါ။")
     else:
         return await message.reply(
             "📌 **မွေးနေ့ထည့်သွင်းနည်း:**\n"
