@@ -138,7 +138,6 @@ owner_only = filters.user(OWNER_ID)
 
 def get_http_session():
     connector = aiohttp.TCPConnector(ssl=False, limit=15)
-    # Wikipedia API requires a descriptive User-Agent to avoid HTTP 403
     headers = {
         "User-Agent": "MyanmarDashboardBot/1.0 (Telegram Group Billboard; contact@example.com)",
         "Accept": "application/json"
@@ -354,6 +353,7 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
         lines.append("📿 **ယနေ့ ဥပုသ်နေ့ ဖြစ်ပါသည်**")
 
     if cache_data.get("history_text"):
+        lines.append("")
         lines.append(f"📜 **သမိုင်းထဲက ဒီနေ့:** {cache_data['history_text']}")
 
     return "\n".join(lines)
@@ -578,7 +578,7 @@ async def update_external_data() -> str:
         await fetch_on_this_day(session, get_now())
         logs.append(f"📜 History: {'OK' if cache_data['history_text'] else 'Empty'}")
 
-        # 1. Batch Weather (Single HTTP request per page -> Zero rate limit)
+        # 1. Batch Weather
         try:
             ok1, main_w = await fetch_regions_weather_batch(session, MAIN_REGIONS)
             if ok1 > 0:
@@ -708,8 +708,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                 TARGET_GROUP_ID,
                 f"🎂🎉 **HAPPY BIRTHDAY!** 🎉🎂\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"ဒီနေ့ဟာ အဖွဲ့သား {mentions} ရဲ့ မွေးနေ့လေး ဖြစ်ပါတယ်!\n"
-                f"ပျော်ရွှင်စရာ မွေးနေ့လေးဖြစ်ပြီး စိတ်ချမ်းသာ ကိုယ်ကျန်းမာစွာနဲ့ လိုအင်ဆန္ဒတွေ အားလုံး ပြည့်ဝပါစေလို့ Group တစ်ခုလုံးက ဆုတောင်းဂုဏ်ပြုပေးလိုက်ပါတယ်ဗျာ 🥂✨",
+                f"ဒီနေ့ဟာ အဖွဲ့သား {mentions} ရဲ့ မွေးနေ့လေး ဖြစ်ပါတယ်!\n\n"
+                f"ပျော်ရွှင်စရာ မွေးနေ့လေးဖြစ်ပြီး စိတ်ချမ်းသာ ကိုယ်ကျန်းမာစွာနဲ့ လိုအင်ဆန္ဒတွေ အားလုံး ပြည့်ဝပါစေလို့ **Admin Team မှ** ဆုတောင်းဂုဏ်ပြုပေးလိုက်ပါတယ် 🥂✨",
                 parse_mode=ParseMode.MARKDOWN,
                 **topic_arg
             )
@@ -726,8 +726,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                     TARGET_GROUP_ID,
                     f"💑🥂 **HAPPY ANNIVERSARY!** 🥂💑\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"ဒီနေ့ဟာ **{p1}** ❤️ **{p2}** တို့ရဲ့ {yr_txt} နှစ်ပတ်လည်နေ့လေး ဖြစ်ပါတယ်!\n"
-                    f"နောင်နှစ်ပေါင်းများစွာတိုင်အောင် အခုလိုပဲ ပျော်ပျော်ရွှင်ရွှင် ချစ်ချစ်ခင်ခင်နဲ့ လက်တွဲသွားနိုင်ကြပါစေလို့ Group တစ်ခုလုံးက ဂုဏ်ပြုဆုတောင်းပေးလိုက်ပါတယ်ဗျာ 💖✨",
+                    f"ဒီနေ့ဟာ **{p1}** ❤️ **{p2}** တို့ရဲ့ {yr_txt} နှစ်ပတ်လည်နေ့လေး ဖြစ်ပါတယ်!\n\n"
+                    f"နောင်နှစ်ပေါင်းများစွာတိုင်အောင် အခုလိုပဲ ပျော်ပျော်ရွှင်ရွှင် ချစ်ချစ်ခင်ခင်နဲ့ လက်တွဲသွားနိုင်ကြပါစေလို့ **Admin Team မှ** ဂုဏ်ပြုဆုတောင်းပေးလိုက်ပါတယ် 💖✨",
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
@@ -751,7 +751,7 @@ async def check_daily_rollover(now: datetime.datetime):
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{lines}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"ဒီနေ့အတွက် စာရင်းအသစ် ပြန်စပါပြီဗျာ! 🎉",
+                    f"ဒီနေ့အတွက် စာရင်းအသစ် ပြန်စပါပြီ! 🎉",
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
@@ -789,7 +789,7 @@ def render_page(page_idx: int) -> str:
             f"📌 **GROUP LIVE BOARD** `[1/4 • 🏠 Home]`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 **{date_str}**\n"
-            f"{cal_info}\n"
+            f"{cal_info}\n\n"
             f"{events_block}\n\n"
             f"🏆 **Today's Top Chatters**\n"
             f"{chat_lines}\n"
