@@ -1,6 +1,8 @@
 import os
+import re
 import math
 import json
+import random
 import asyncio
 
 # Python 3.14 Event Loop Fix for Pyrogram
@@ -8,6 +10,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 import datetime
+from urllib.parse import quote
 from threading import Thread
 from flask import Flask
 import aiohttp
@@ -27,9 +30,7 @@ TARGET_TOPIC_ID = int(os.environ.get("TARGET_TOPIC_ID", "0"))
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", "-1009876543210"))
 
 MM_TZ = datetime.timezone(datetime.timedelta(hours=6, minutes=30))
-STATE_FILE = "dashboard_state.json"
-HBD_BACKUP_FILE = "birthdays_backup.json"
-RS_BACKUP_FILE = "relationships_backup.json"
+BACKUP_FILE = "dashboard_backup.json"
 
 # ================= FLASK KEEP-ALIVE =================
 web_app = Flask(__name__)
@@ -126,7 +127,9 @@ cache_data = {
     "weather_main": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "weather_other": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "market": "• 🪙 **Gold Spot:** `-`\n• **BTC:** `-` | **BNB:** `-`\n• **SOL:** `-` | **TON:** `-`",
-    "football": "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽"
+    "football": "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽",
+    "history_date": "",
+    "history_text": ""
 }
 
 app = Client("dashboard_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -161,12 +164,90 @@ async def resolve_user_target(target: str):
             return int(clean_target), f"User_{clean_target[-4:]}", ""
         return None, None, None
 
-# ================= EXACT MYANMAR CALENDAR ALGORITHM =================
+# ================= EXACT MYANMAR CALENDAR & GLOBAL OBSERVANCES =================
 def to_myanmar_digits(num: int) -> str:
     mm_digits = "၀၁၂၃၄၅၆၇၈၉"
     return "".join(mm_digits[int(d)] for d in str(num))
 
-def get_exact_myanmar_date(dt: datetime.datetime) -> str:
+FIXED_OBSERVANCES = {
+    (1, 1): "🎆 နှစ်သစ်ကူးနေ့ (New Year's Day)",
+    (1, 4): "🇲🇲 မြန်မာ့လွတ်လပ်ရေးနေ့ (Independence Day)",
+    (2, 2): "🌿 ကမ္ဘာ့ရေတိမ်ဒေသများနေ့ (World Wetlands Day)",
+    (2, 4): "🎗️ ကမ္ဘာ့ကင်ဆာရောဂါတိုက်ဖျက်ရေးနေ့ (World Cancer Day)",
+    (2, 12): "🇲🇲 ပြည်ထောင်စုနေ့ (Union Day)",
+    (2, 13): "🇲🇲 မြန်မာနိုင်ငံကလေးများနေ့ (ဗိုလ်ချုပ်မွေးနေ့)",
+    (2, 14): "💝 ချစ်သူများနေ့ (Valentine's Day)",
+    (2, 21): "🗣️ အပြည်ပြည်ဆိုင်ရာ မိခင်ဘာသာစကားနေ့",
+    (3, 2): "🌾 တောင်သူလယ်သမားနေ့ (Peasants' Day)",
+    (3, 3): "🐾 ကမ္ဘာ့တောရိုင်းတိရစ္ဆာန်များနေ့ (World Wildlife Day)",
+    (3, 8): "👩 အပြည်ပြည်ဆိုင်ရာ အမျိုးသမီးများနေ့ (Women's Day)",
+    (3, 20): "😊 အပြည်ပြည်ဆိုင်ရာ ပျော်ရွှင်မှုနေ့ (Day of Happiness)",
+    (3, 21): "🌲 ကမ္ဘာ့သစ်တောများနေ့ (World Forestry Day)",
+    (3, 22): "💧 ကမ္ဘာ့ရေသယံဇာတနေ့ (World Water Day)",
+    (3, 27): "🎖️ တပ်မတော်နေ့ (Armed Forces Day)",
+    (4, 1): "🤡 ဧပြီဖူးလ်နေ့ (April Fools' Day)",
+    (4, 7): "🏥 ကမ္ဘာ့ကျန်းမာရေးနေ့ (World Health Day)",
+    (4, 13): "💦 မဟာသင်္ကြန် အကြိုနေ့",
+    (4, 14): "💦 မဟာသင်္ကြန် အကျနေ့",
+    (4, 15): "💦 မဟာသင်္ကြန် အကြတ်နေ့",
+    (4, 16): "💦 မဟာသင်္ကြန် အတက်နေ့",
+    (4, 17): "🎊 မြန်မာနှစ်ဆန်းတစ်ရက်နေ့",
+    (4, 22): "🌍 ကမ္ဘာမြေနေ့ (Earth Day)",
+    (4, 23): "📚 ကမ္ဘာ့စာအုပ်နှင့် မူပိုင်ခွင့်နေ့",
+    (5, 1): "👷 ကမ္ဘာ့အလုပ်သမားနေ့ (May Day)",
+    (5, 3): "📰 ကမ္ဘာ့စာနယ်ဇင်းလွတ်လပ်ခွင့်နေ့",
+    (5, 8): "⛑️ ကမ္ဘာ့ကြက်ခြေနီနေ့ (World Red Cross Day)",
+    (5, 15): "👨‍👩‍👧‍👦 အပြည်ပြည်ဆိုင်ရာ မိသားစုများနေ့",
+    (5, 31): "🚭 ကမ္ဘာ့ဆေးလိပ်မသောက်ရေးနေ့",
+    (6, 5): "🌱 ကမ္ဘာ့ပတ်ဝန်းကျင်ထိန်းသိမ်းရေးနေ့",
+    (6, 8): "🌊 ကမ္ဘာ့သမုဒ္ဒရာများနေ့ (World Oceans Day)",
+    (6, 14): "🩸 ကမ္ဘာ့သွေးလှူရှင်များနေ့ (World Blood Donor Day)",
+    (6, 21): "🎶 ကမ္ဘာ့ဂီတနေ့ / အပြည်ပြည်ဆိုင်ရာ ယောဂနေ့",
+    (6, 26): "🚫 အပြည်ပြည်ဆိုင်ရာ မူးယစ်ဆေးဝါးတိုက်ဖျက်ရေးနေ့",
+    (7, 11): "👥 ကမ္ဘာ့လူဦးရေနေ့ (World Population Day)",
+    (7, 19): "🕯️ မြန်မာ့အာဇာနည်နေ့ (Martyrs' Day)",
+    (7, 30): "🤝 အပြည်ပြည်ဆိုင်ရာ မိတ်ဆွေသူငယ်ချင်းများနေ့",
+    (8, 12): "🧑 အပြည်ပြည်ဆိုင်ရာ လူငယ်များနေ့ (Youth Day)",
+    (8, 19): "📸 ကမ္ဘာ့ဓာတ်ပုံပညာနေ့ (World Photography Day)",
+    (9, 8): "📖 နိုင်ငံတကာ စာတတ်မြောက်ရေးနေ့",
+    (9, 21): "🕊️ အပြည်ပြည်ဆိုင်ရာ ငြိမ်းချမ်းရေးနေ့ (Peace Day)",
+    (9, 27): "✈️ ကမ္ဘာ့ခရီးသွားလုပ်ငန်းနေ့ (World Tourism Day)",
+    (10, 1): "☕ အပြည်ပြည်ဆိုင်ရာ ကော်ဖီနေ့ / သက်ကြီးရွယ်အိုများနေ့",
+    (10, 4): "🐕 ကမ္ဘာ့တိရစ္ဆာန်များနေ့ (World Animal Day)",
+    (10, 5): "👩‍🏫 ကမ္ဘာ့ဆရာများနေ့ (World Teachers' Day)",
+    (10, 10): "🧠 ကမ္ဘာ့စိတ်ကျန်းမာရေးနေ့ (Mental Health Day)",
+    (10, 16): "🍚 ကမ္ဘာ့စားနပ်ရိက္ခာနေ့ (World Food Day)",
+    (10, 24): "🇺🇳 ကုလသမဂ္ဂနေ့ (United Nations Day)",
+    (10, 31): "🎃 ဟALLOWEEN နေ့ (Halloween)",
+    (11, 14): "🩺 ကမ္ဘာ့ဆီးချိုရောဂါကာကွယ်ရေးနေ့",
+    (11, 19): "👨 အပြည်ပြည်ဆိုင်ရာ အမျိုးသားများနေ့ (Men's Day)",
+    (11, 20): "🧒 ကမ္ဘာ့ကလေးများနေ့ (Universal Children's Day)",
+    (11, 21): "📺 ကမ္ဘာ့ရုပ်မြင်သံကြားနေ့ (World Television Day)",
+    (12, 1): "🎗️ ကမ္ဘာ့ခုခံအားကျဆင်းမှုရောဂါတိုက်ဖျက်ရေးနေ့ (AIDS Day)",
+    (12, 3): "♿ အပြည်ပြည်ဆိုင်ရာ မသန်စွမ်းသူများနေ့",
+    (12, 10): "⚖️ အပြည်ပြည်ဆိုင်ရာ လူ့အခွင့်အရေးနေ့",
+    (12, 25): "🎄 ခရစ္စမတ်နေ့ (Christmas Day)",
+    (12, 31): "🥂 နှစ်ဟောင်းကြိုဆိုနှုတ်ဆက်ပွဲ (New Year's Eve)"
+}
+
+MYANMAR_LUNAR_FESTIVALS = {
+    (2, 15): "🌳 ကဆုန်လပြည့် (ဗုဒ္ဓနေ့ / ညောင်ရေသွန်းပွဲ)",
+    (3, 15): "📜 နယုန်လပြည့် (မဟာသမယအခါတော်နေ့)",
+    (4, 15): "☸️ ဝါဆိုလပြည့် (ဓမ္မစကြာအခါတော်နေ့)",
+    (5, 15): "🙏 ဝါခေါင်လပြည့် (မေတ္တာအခါတော်နေ့)",
+    (6, 15): "🪷 တော်သလင်းလပြည့် (ဂရုဓမ္မအခါတော်နေ့)",
+    (7, 14): "🪔 သီတင်းကျွတ် မီးထွန်းပွဲ အဖိတ်နေ့",
+    (7, 15): "🪔 သီတင်းကျွတ်လပြည့် (အဘိဓမ္မာအခါတော်နေ့)",
+    (7, 16): "🪔 သီတင်းကျွတ် လပြည့်ကျော် ၁ ရက်",
+    (8, 14): "🏮 တန်ဆောင်တိုင် မီးထွန်းပွဲ အဖိတ်နေ့",
+    (8, 15): "🏮 တန်ဆောင်မုန်းလပြည့် (သာမညဖလအခါတော်နေ့)",
+    (8, 25): "🇲🇲 အမျိုးသားအောင်ပွဲနေ့ (National Day)",
+    (9, 1): "✍️ နတ်တော်လဆန်း ၁ ရက် (စာဆိုတော်နေ့)",
+    (11, 15): "🍚 တပို့တွဲလပြည့် (ထမနဲပွဲ / ဩဝါဒပါတိမောက်နေ့)",
+    (12, 15): "🏖️ တပေါင်းလပြည့် (သဲပုံစေတီပွဲ / မြတ်ဗုဒ္ဓပြည်တော်ဝင်နေ့)"
+}
+
+def get_calendar_and_observance(dt: datetime.datetime) -> str:
     y, m, d = dt.year, dt.month, dt.day
     a = (14 - m) // 12
     y_j = y + 4800 - a
@@ -242,42 +323,52 @@ def get_exact_myanmar_date(dt: datetime.datetime) -> str:
     else:
         phase_str = f"လဆုတ် {to_myanmar_digits(md - 15)} ရက်"
 
-    return f"မြန်မာသက္ကရာဇ် {to_myanmar_digits(my)} ခုနှစ်၊ {m_str}{phase_str}"
+    lines = [f"🌙 မြန်မာသက္ကရာဇ် {to_myanmar_digits(my)} ခုနှစ်၊ {m_str}{phase_str}"]
 
-def get_calendar_line(now: datetime.datetime) -> str:
-    mm_full = get_exact_myanmar_date(now)
-    thingyan = datetime.datetime(now.year, 4, 13, tzinfo=MM_TZ)
-    if now > thingyan:
-        thingyan = datetime.datetime(now.year + 1, 4, 13, tzinfo=MM_TZ)
-    days_to_thingyan = (thingyan.date() - now.date()).days
-    return f"🌙 {mm_full}\n💦 သင်္ကြန်ရောက်ရန် {days_to_thingyan} ရက် လိုသေးသည်"
+    events = []
+    if (mm, md) in MYANMAR_LUNAR_FESTIVALS:
+        events.append(MYANMAR_LUNAR_FESTIVALS[(mm, md)])
+    if (dt.month, dt.day) in FIXED_OBSERVANCES:
+        events.append(FIXED_OBSERVANCES[(dt.month, dt.day)])
 
-# ================= STATE PERSISTENCE =================
+    is_sabbath = md in [8, 15, 23] or md >= 29
+    if events:
+        obs_line = f"🎊 **ယနေ့ အထိမ်းအမှတ်:** {' | '.join(events)}"
+        if is_sabbath and md != 15:
+            obs_line += " (📿 ဥပုသ်နေ့)"
+        lines.append(obs_line)
+    elif is_sabbath:
+        lines.append("📿 **ယနေ့ ဥပုသ်နေ့ ဖြစ်ပါသည်**")
+
+    if cache_data.get("history_text"):
+        lines.append(f"📜 **သမိုင်းထဲက ဒီနေ့:** {cache_data['history_text']}")
+
+    return "\n".join(lines)
+
+# ================= MANUAL STATE PERSISTENCE =================
 async def load_state():
+    """Bot စတင်ချိန် / Restart ကျချိန်တွင် Log Channel ထဲရှိ နောက်ဆုံး Backup ဖိုင်မှ ပြန်ဖတ်မည်"""
     global state
     try:
-        async for msg in app.get_chat_history(LOG_CHANNEL_ID, limit=10):
-            if msg.document and msg.document.file_name == STATE_FILE:
+        async for msg in app.get_chat_history(LOG_CHANNEL_ID, limit=15):
+            if msg.document and msg.document.file_name == BACKUP_FILE:
                 path = await app.download_media(msg)
                 with open(path, "r", encoding="utf-8") as f:
                     state.update(json.load(f))
                 os.remove(path)
-                print("✅ State loaded from Telegram Log Channel.")
+                print("✅ State restored from Telegram Log Channel.")
                 return
     except Exception as e:
         print(f"⚠️ Load state error: {e}")
 
-async def save_state():
+async def save_backup_to_log(caption_text: str):
+    """Manual /backup နှိပ်မှသာ Log Channel ထဲသို့ သိမ်းဆည်းမည်"""
+    with open(BACKUP_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        await app.send_document(
-            LOG_CHANNEL_ID,
-            document=STATE_FILE,
-            caption=f"Auto-Backup: {datetime.datetime.now(MM_TZ).strftime('%Y-%m-%d %H:%M')}"
-        )
+        await app.send_document(LOG_CHANNEL_ID, document=BACKUP_FILE, caption=caption_text)
     except Exception as e:
-        print(f"⚠️ Save state error: {e}")
+        print(f"⚠️ Log Channel backup err: {e}")
 
 # ================= WEATHER, BIRTHDAY & ANNIVERSARY HELPERS =================
 def get_now():
@@ -342,12 +433,103 @@ def get_anniversary_line(now: datetime.datetime) -> str:
         pairs.append(f"**{p1}** ❤️ **{p2}**{yr_txt}")
     return f"💑 **Happy Anniversary:** 🎉 {', '.join(pairs)} 🥂"
 
-# ================= AUTO EXTERNAL DATA FETCHERS (US/GLOBAL SAFE) =================
+# ================= MYANMAR ON THIS DAY (MY WIKI + AUTO TRANSLATE) =================
+MM_MONTHS_WIKI = [
+    "", "ဇန်နဝါရီ", "ဖေဖော်ဝါရီ", "မတ်", "ဧပြီ", "မေ", "ဇွန်",
+    "ဇူလိုင်", "ဩဂုတ်", "စက်တင်ဘာ", "အောက်တိုဘာ", "နိုဝင်ဘာ", "ဒီဇင်ဘာ"
+]
+
+async def translate_en_to_my(session, text: str) -> str:
+    """အင်္ဂလိပ်စာကြောင်းတိုအား မြန်မာဘာသာသို့ အခမဲ့ပြန်ဆိုခြင်း"""
+    try:
+        t_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={quote(text)}"
+        async with session.get(t_url, timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                translated = "".join(part[0] for part in data[0] if part[0])
+                return translated.strip()
+    except Exception as e:
+        print("Translate err:", e)
+    return text
+
+async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
+    """မြန်မာ Wikipedia မှ ယနေ့ရက်စွဲပါ ဖြစ်ရပ်များကို တိုက်ရိုက်ရှာဖွေခြင်း"""
+    title = f"{MM_MONTHS_WIKI[now.month]}_{to_myanmar_digits(now.day)}"
+    url = f"https://my.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles={quote(title)}&format=json"
+    try:
+        async with session.get(url, timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                pages = data.get("query", {}).get("pages", {})
+                for page_id, page_data in pages.items():
+                    if page_id == "-1":
+                        return ""
+                    extract = page_data.get("extract", "")
+                    if "== ဖြစ်ရပ်များ ==" in extract:
+                        part = extract.split("== ဖြစ်ရပ်များ ==")[1].split("==")[0]
+                        lines = [ln.strip() for ln in part.splitlines() if ln.strip() and len(ln.strip()) <= 160]
+                        if lines:
+                            chosen = random.choice(lines)
+                            chosen = re.sub(r"^\*\s*", "", chosen)
+                            return f"🇲🇲 {chosen}"
+    except Exception as e:
+        print("MM Wiki err:", e)
+    return ""
+
+async def fetch_on_this_day(session, now: datetime.datetime):
+    date_key = now.strftime("%m-%d")
+    if cache_data.get("history_date") == date_key and cache_data.get("history_text"):
+        return
+
+    # 1. ပထမဦးစားပေး - မြန်မာ Wikipedia မှ မြန်မာလို တိုက်ရိုက်ယူမည်
+    mm_wiki_res = await fetch_myanmar_wiki_event(session, now)
+    if mm_wiki_res:
+        cache_data["history_date"] = date_key
+        cache_data["history_text"] = mm_wiki_res
+        print(f"✅ MM Wikipedia History loaded for {date_key}")
+        return
+
+    # 2. ဒုတိယဦးစားပေး - English Wikipedia မှ တိုတိုတုတ်တုတ် ဖြစ်ရပ်ယူပြီး မြန်မာဘာသာပြန်မည်
+    mm_keywords = ["myanmar", "burma", "rangoon", "yangon", "mandalay", "u thant", "aung san", "bagan"]
+    try:
+        url = f"https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{now.month:02d}/{now.day:02d}"
+        async with session.get(url, timeout=15) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                events = data.get("events", [])
+                if not events:
+                    return
+
+                mm_events = []
+                short_world = []
+                for ev in events:
+                    year = ev.get("year", "")
+                    text = ev.get("text", "").strip()
+                    if not text or len(text) > 125:
+                        continue
+                    if any(k in text.lower() for k in mm_keywords):
+                        mm_events.append((year, text, "🇲🇲"))
+                    elif int(year) >= 1850:
+                        short_world.append((year, text, "🌍"))
+
+                pool = mm_events if mm_events else short_world
+                if not pool:
+                    ev = events[0]
+                    pool = [(ev.get("year", ""), ev.get("text", "")[:120], "🌍")]
+
+                year, en_text, flag = random.choice(pool[:8])
+                my_text = await translate_en_to_my(session, en_text)
+                cache_data["history_date"] = date_key
+                cache_data["history_text"] = f"{flag} **({year})** {my_text}"
+                print(f"✅ Translated History updated for {date_key}")
+    except Exception as e:
+        print("❌ On This Day fetch err:", e)
+
+# ================= EXTERNAL DATA FETCHERS =================
 async def fetch_regions_weather(session, regions_data) -> str:
     flat_cities = [c for _, cities in regions_data for c in cities]
     weather_results = []
 
-    # Open-Meteo ကို ၁၅ မြို့စီ ခွဲပြီး Batch ဆွဲမည်
     for i in range(0, len(flat_cities), 15):
         chunk = flat_cities[i:i+15]
         lats = ",".join(str(c[1]) for c in chunk)
@@ -362,7 +544,6 @@ async def fetch_regions_weather(session, regions_data) -> str:
                     weather_results.append(data)
 
     if len(weather_results) != len(flat_cities):
-        print(f"⚠️ Weather count mismatch: got {len(weather_results)}, expected {len(flat_cities)}")
         return ""
 
     sections = []
@@ -379,9 +560,10 @@ async def fetch_regions_weather(session, regions_data) -> str:
     return "\n\n".join(sections)
 
 async def update_external_data():
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "GroupDashboardBot/1.0 (TelegramBot)"}
     async with aiohttp.ClientSession(headers=headers) as session:
-        # 1. Weather (Main 15 + Other 30)
+        await fetch_on_this_day(session, get_now())
+
         try:
             main_w = await fetch_regions_weather(session, MAIN_REGIONS)
             if main_w:
@@ -394,7 +576,6 @@ async def update_external_data():
         except Exception as e:
             print("❌ Weather batch err:", e)
 
-        # 2. Global Gold Spot ($/oz) & Crypto (BTC, BNB, SOL, TON) via CoinGecko (No US Block)
         try:
             cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,bitcoin,binancecoin,solana,the-open-network&vs_currencies=usd"
             async with session.get(cg_url, timeout=15) as resp:
@@ -421,7 +602,6 @@ async def update_external_data():
         except Exception as e:
             print("❌ Market fetch err:", e)
 
-        # 3. Football Live Score (ESPN)
         leagues = [
             ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
             ("🇪🇸 La Liga", "esp.1"),
@@ -470,8 +650,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                 TARGET_GROUP_ID,
                 f"🎂🎉 **HAPPY BIRTHDAY!** 🎉🎂\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"ဒီနေ့ဟာ အဖွဲ့သား {mentions} ရဲ့ မွေးနေ့လေး ဖြစ်ပါတယ်!\n"
-                f"ပျော်ရွှင်စရာ မွေးနေ့လေးဖြစ်ပြီး စိတ်ချမ်းသာ ကိုယ်ကျန်းမာစွာနဲ့ လိုအင်ဆန္ဒတွေ အားလုံး ပြည့်ဝပါစေလို့ Group တစ်ခုလုံးက ဆုတောင်းဂုဏ်ပြုပေးလိုက်ပါတယ်ဗျာ 🥂✨",
+                f"ဒီနေ့ဟာ {mentions} ရဲ့ မွေးနေ့လေး ဖြစ်ပါတယ်!\n"
+                f"ပျော်ရွှင်စရာ မွေးနေ့လေးဖြစ်ပြီး စိတ်ချမ်းသာ ကိုယ်ကျန်းမာစွာနဲ့ လိုအင်ဆန္ဒတွေ အားလုံး ပြည့်ဝပါစေလို့ Admin Team မှ ဆုတောင်းဂုဏ်ပြုပေးလိုက်ပါတယ် 🥂✨",
                 parse_mode=ParseMode.MARKDOWN,
                 **topic_arg
             )
@@ -489,7 +669,7 @@ async def send_daily_celebrations(now: datetime.datetime):
                     f"💑🥂 **HAPPY ANNIVERSARY!** 🥂💑\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"ဒီနေ့ဟာ **{p1}** ❤️ **{p2}** တို့ရဲ့ {yr_txt} နှစ်ပတ်လည်နေ့လေး ဖြစ်ပါတယ်!\n"
-                    f"နောင်နှစ်ပေါင်းများစွာတိုင်အောင် အခုလိုပဲ ပျော်ပျော်ရွှင်ရွှင် ချစ်ချစ်ခင်ခင်နဲ့ လက်တွဲသွားနိုင်ကြပါစေလို့ Group တစ်ခုလုံးက ဂုဏ်ပြုဆုတောင်းပေးလိုက်ပါတယ်ဗျာ 💖✨",
+                    f"နောင်နှစ်ပေါင်းများစွာတိုင်အောင် အခုလိုပဲ ပျော်ပျော်ရွှင်ရွှင် ချစ်ချစ်ခင်ခင်နဲ့ လက်တွဲသွားနိုင်ကြပါစေလို့ Admin Team မှ ဂုဏ်ပြုဆုတောင်းပေးလိုက်ပါတယ် 💖✨",
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
@@ -497,7 +677,6 @@ async def send_daily_celebrations(now: datetime.datetime):
                 print("Anni wish err:", e)
 
     state["wished_date"] = today_key
-    await save_state()
 
 async def check_daily_rollover(now: datetime.datetime):
     today_key = now.strftime("%Y-%m-%d")
@@ -510,11 +689,11 @@ async def check_daily_rollover(now: datetime.datetime):
                 topic_arg = {"reply_to_message_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
                 await app.send_message(
                     TARGET_GROUP_ID,
-                    f"🌟 **မနေ့က ({state['current_date']}) စကားအများဆုံးပြောခဲ့သူများ** 🌟\n"
+                    f"🌟 **မနေ့က ({state['current_date']}) Group ထဲမှာ Active ဖြစ်ခဲ့ဆုံးသူများ** 🌟\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{lines}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"ဒီနေ့အတွက် စာရင်းအသစ် ပြန်စပါပြီဗျာ! 🎉",
+                    f"ဒီနေ့အတွက် စာရင်းအသစ် ပြန်စပါပြီ! 🎉",
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
@@ -522,7 +701,6 @@ async def check_daily_rollover(now: datetime.datetime):
                 print("Yesterday summary err:", e)
         state["chat_counts"] = {}
         state["current_date"] = today_key
-        await save_state()
     elif not state["current_date"]:
         state["current_date"] = today_key
 
@@ -537,7 +715,7 @@ def render_page(page_idx: int) -> str:
     page_key = PAGES[page_idx % len(PAGES)]
 
     if page_key == "home":
-        cal_info = get_calendar_line(now)
+        cal_info = get_calendar_and_observance(now)
         bday_line = get_birthday_line(now)
         anni_line = get_anniversary_line(now)
         events_block = f"{bday_line}\n{anni_line}" if anni_line else bday_line
@@ -618,7 +796,6 @@ async def spawn_new_board():
         print("Pin err:", e)
 
     state["pin_msg_id"] = sent.id
-    await save_state()
 
 async def rotate_board_page():
     msg_id = state.get("pin_msg_id")
@@ -644,7 +821,7 @@ async def rotate_board_page():
         else:
             print("Rotate board err:", e)
 
-# ================= OWNER-ONLY BIRTHDAY COMMANDS =================
+# ================= OWNER-ONLY COMMANDS =================
 @app.on_message(filters.command(["board", "initdash"]) & owner_only)
 async def cmd_spawn_board(client, message):
     await spawn_new_board()
@@ -656,6 +833,48 @@ async def cmd_spawn_board(client, message):
     else:
         await message.reply("✅ သတ်မှတ်ထားသော Topic အခန်းထဲတွင် Board အသစ် ထုတ်ပြီး Pin တင်လိုက်ပါပြီ။")
 
+# 1. Manual Unified Backup & Restore (/backup & /restore)
+@app.on_message(filters.command(["backup", "backuphbd", "backuprs"]) & owner_only)
+async def cmd_manual_backup(client, message):
+    now_str = get_now().strftime("%Y-%m-%d %H:%M")
+    caption = (
+        f"📦 **Dashboard Manual Backup** (`{now_str}`)\n"
+        f"• မွေးနေ့စာရင်း: `{len(state['birthdays'])} ဦး`\n"
+        f"• အတွဲစာရင်း: `{len(state['relationships'])} တွဲ`\n"
+        f"_(ပြန်သွင်းလိုပါက ဒီဖိုင်ကို Reply ပြန်ပြီး `/restore` ရိုက်ပါ)_"
+    )
+    await save_backup_to_log(f"Manual Backup: {now_str}")
+    await message.reply_document(document=BACKUP_FILE, caption=caption)
+    if os.path.exists(BACKUP_FILE):
+        os.remove(BACKUP_FILE)
+
+@app.on_message(filters.command(["restore", "restorehbd", "restorers"]) & owner_only)
+async def cmd_manual_restore(client, message):
+    replied = message.reply_to_message
+    if not replied or not replied.document or not replied.document.file_name.endswith(".json"):
+        return await message.reply("⚠️ `dashboard_backup.json` ဖိုင်ကို Reply ပြန်ပြီး `/restore` လို့ ရိုက်ပါ။")
+    path = await app.download_media(replied)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("Invalid backup JSON format")
+        state.update(data)
+        await save_backup_to_log(f"Restored Backup: {get_now().strftime('%Y-%m-%d %H:%M')}")
+        await message.reply(
+            f"✅ Restore အောင်မြင်ပါသည်!\n"
+            f"• မွေးနေ့စာရင်း: **{len(state['birthdays'])} ဦး**\n"
+            f"• အတွဲစာရင်း: **{len(state['relationships'])} တွဲ**"
+        )
+    except Exception as e:
+        await message.reply(f"❌ ဖိုင်ဖတ်ရာတွင် အမှားရှိနေပါသည်: `{e}`")
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(BACKUP_FILE):
+            os.remove(BACKUP_FILE)
+
+# 2. Birthday Management (/addhbd, /hbdlist, /delhbd)
 @app.on_message(filters.command("addhbd") & owner_only)
 async def add_birthday(client, message):
     parts = message.text.split()
@@ -684,8 +903,7 @@ async def add_birthday(client, message):
 
     state["birthdays"] = [b for b in state["birthdays"] if int(b["uid"]) != uid]
     state["birthdays"].append({"uid": uid, "name": name, "username": uname, "day": int(day), "month": month})
-    await save_state()
-    await message.reply(f"✅ {user_link(uid, name)} ရဲ့ မွေးနေ့ (`{day} {month}`) ကို စာရင်းသွင်းပြီးပါပြီ။", parse_mode=ParseMode.MARKDOWN)
+    await message.reply(f"✅ {user_link(uid, name)} ရဲ့ မွေးနေ့ (`{day} {month}`) ကို စာရင်းသွင်းပြီးပါပြီ။\n_(သိမ်းဆည်းရန် `/backup` ရိုက်ထားနိုင်ပါသည်)_", parse_mode=ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("hbdlist") & owner_only)
 async def list_birthdays(client, message):
@@ -706,3 +924,154 @@ async def delete_birthday(client, message):
     if len(parts) < 2:
         return await message.reply("ဖျက်လိုသော နံပါတ်စဉ်၊ `@username` သို့မဟုတ် နာမည်ထည့်ပါ။ ဥပမာ- `/delhbd @mgmg`")
     query = parts[1].strip()
+    clean_q = query[1:].lower() if query.startswith("@") else query.lower()
+
+    if query.isdigit() and 1 <= int(query) <= len(state["birthdays"]):
+        removed = state["birthdays"].pop(int(query) - 1)
+        return await message.reply(f"🗑️ **{removed['name']}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
+
+    before_len = len(state["birthdays"])
+    state["birthdays"] = [
+        b for b in state["birthdays"]
+        if b["name"].lower() != clean_q
+        and str(b["uid"]) != clean_q
+        and b.get("username", "").lower() != clean_q
+    ]
+    if len(state["birthdays"]) == before_len:
+        return await message.reply(f"❌ `{query}` ဖြင့် မွေးနေ့စာရင်း မတွေ့ပါ။ (`/hbdlist` ဖြင့် ပြန်စစ်ပါ)")
+    await message.reply(f"🗑️ **{query}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
+
+# 3. Relationship Management (/addrs, /rslist, /delrs)
+@app.on_message(filters.command("addrs") & owner_only)
+async def add_relationship(client, message):
+    parts = message.text.split()
+    if len(parts) < 6:
+        return await message.reply(
+            "📌 **အတွဲစာရင်း ထည့်သွင်းနည်း:**\n"
+            "`/addrs 14 Feb 2025 @user1 @user2`\n"
+            "_(စတွဲတဲ့ရက် လ ခုနှစ် + `@username` သို့မဟုတ် User ID ၂ ခု)_"
+        )
+    day, month, year = parts[1], parts[2].capitalize()[:3], parts[3]
+    target1, target2 = parts[4], parts[5]
+
+    if month not in MONTH_MAP or not day.isdigit() or not year.isdigit():
+        return await message.reply("❌ ရက်စွဲပုံစံ မှားယွင်းနေပါသည်။ ဥပမာ- `14 Feb 2025`")
+
+    uid1, name1, user1 = await resolve_user_target(target1)
+    if not uid1:
+        return await message.reply(f"❌ `{target1}` အကောင့်ကို ရှာမတွေ့ပါ။")
+
+    uid2, name2, user2 = await resolve_user_target(target2)
+    if not uid2:
+        return await message.reply(f"❌ `{target2}` အကောင့်ကို ရှာမတွေ့ပါ။")
+
+    state["relationships"] = [
+        r for r in state["relationships"]
+        if int(r["uid1"]) not in (uid1, uid2) and int(r["uid2"]) not in (uid1, uid2)
+    ]
+    state["relationships"].append({
+        "uid1": uid1, "name1": name1, "user1": user1,
+        "uid2": uid2, "name2": name2, "user2": user2,
+        "day": int(day), "month": month, "year": int(year)
+    })
+    p1 = user_link(uid1, name1)
+    p2 = user_link(uid2, name2)
+    await message.reply(f"💑 {p1} ❤️ {p2} အတွဲကို (`{day} {month} {year}`) မှစတင်၍ စာရင်းသွင်းပြီးပါပြီ။\n_(သိမ်းဆည်းရန် `/backup` ရိုက်ထားနိုင်ပါသည်)_", parse_mode=ParseMode.MARKDOWN)
+
+@app.on_message(filters.command("rslist") & owner_only)
+async def list_relationships(client, message):
+    if not state["relationships"]:
+        return await message.reply("💑 အတွဲစာရင်းထဲတွင် မည်သူမျှ မရှိသေးပါ။")
+    now = get_now().date()
+    lines = ["💑 **Group အတွဲစာရင်းများ**", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for i, r in enumerate(state["relationships"], 1):
+        p1 = user_link(r["uid1"], r["name1"])
+        p2 = user_link(r["uid2"], r["name2"])
+        start_d = datetime.date(int(r["year"]), MONTH_MAP[r["month"]], int(r["day"]))
+        days_together = max(0, (now - start_d).days)
+        lines.append(f"{i}. {p1} ❤️ {p2} — `{r['day']} {r['month']} {r['year']}` ({days_together} ရက်)")
+    lines.append("\n_(ဖြုတ်လိုပါက `/delrs နံပါတ်` သို့မဟုတ် `/delrs @username` ရိုက်ပါ)_")
+    await message.reply("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+@app.on_message(filters.command("delrs") & owner_only)
+async def delete_relationship(client, message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.reply("ဖြုတ်လိုသော နံပါတ်စဉ်၊ `@username` သို့မဟုတ် နာမည်ထည့်ပါ။ ဥပမာ- `/delrs @mgmg`")
+    query = parts[1].strip()
+    clean_q = query[1:].lower() if query.startswith("@") else query.lower()
+
+    if query.isdigit() and 1 <= int(query) <= len(state["relationships"]):
+        removed = state["relationships"].pop(int(query) - 1)
+        return await message.reply(f"💔 **{removed['name1']} & {removed['name2']}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
+
+    kept = []
+    removed_pairs = []
+    for r in state["relationships"]:
+        match_p1 = (
+            r["name1"].lower() == clean_q
+            or str(r["uid1"]) == clean_q
+            or r.get("user1", "").lower() == clean_q
+        )
+        match_p2 = (
+            r["name2"].lower() == clean_q
+            or str(r["uid2"]) == clean_q
+            or r.get("user2", "").lower() == clean_q
+        )
+        if match_p1 or match_p2:
+            removed_pairs.append(f"{r['name1']} & {r['name2']}")
+        else:
+            kept.append(r)
+
+    if not removed_pairs:
+        return await message.reply(f"❌ `{query}` ဖြင့် အတွဲစာရင်း မတွေ့ပါ။ (`/rslist` ဖြင့် ပြန်စစ်ပါ)")
+
+    state["relationships"] = kept
+    await message.reply(f"💔 **{', '.join(removed_pairs)}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
+
+# ================= MESSAGE COUNTER & AUTO-PROFILE SYNC =================
+@app.on_message(filters.chat(TARGET_GROUP_ID) & ~filters.service)
+async def count_messages(client, message):
+    if not message.from_user or message.from_user.is_bot:
+        return
+    uid_int = message.from_user.id
+    uid = str(uid_int)
+    name = message.from_user.first_name or "User"
+    uname = message.from_user.username or ""
+
+    if uid not in state["chat_counts"]:
+        state["chat_counts"][uid] = {"name": name, "username": uname, "count": 0}
+    state["chat_counts"][uid]["name"] = name
+    state["chat_counts"][uid]["username"] = uname
+    state["chat_counts"][uid]["count"] += 1
+
+    for b in state["birthdays"]:
+        if int(b["uid"]) == uid_int:
+            b["name"] = name
+            b["username"] = uname
+    for r in state["relationships"]:
+        if int(r["uid1"]) == uid_int:
+            r["name1"] = name
+            r["user1"] = uname
+        if int(r["uid2"]) == uid_int:
+            r["name2"] = name
+            r["user2"] = uname
+
+# ================= SCHEDULER & MAIN =================
+async def start_scheduler():
+    scheduler = AsyncIOScheduler(timezone=MM_TZ)
+    scheduler.add_job(rotate_board_page, "interval", minutes=2)
+    scheduler.add_job(update_external_data, "interval", minutes=15)
+    scheduler.start()
+
+async def main():
+    Thread(target=run_flask, daemon=True).start()
+    await app.start()
+    await load_state()
+    await update_external_data()
+    await start_scheduler()
+    print("🚀 Final Owner-Controlled Billboard Bot Started Successfully!")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    loop.run_until_complete(main())
