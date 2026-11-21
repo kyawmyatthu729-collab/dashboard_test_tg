@@ -652,4 +652,4 @@ async def main():
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    app.run(main())
+    loop.run_until_complete(main())
