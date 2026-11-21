@@ -140,7 +140,7 @@ owner_only = filters.user(OWNER_ID)
 def get_http_session():
     connector = aiohttp.TCPConnector(ssl=False, limit=15)
     headers = {
-        "User-Agent": "MyanmarDashboardBot/1.0 (Telegram Group Billboard; contact@example.com)",
+        "User-Agent": "MyanmarDashboardBot/1.0 (https://github.com/myanmar-dashboard-bot)",
         "Accept": "application/json"
     }
     return aiohttp.ClientSession(connector=connector, headers=headers)
@@ -404,6 +404,22 @@ def decode_wmo_weather(code: int) -> str:
     else:
         return "🌤️ ပုံမှန်"
 
+def decode_metno_symbol(symbol: str) -> str:
+    s = symbol.lower()
+    if "clearsky" in s or "fair" in s:
+        return "☀️ နေသာ"
+    elif "partlycloudy" in s:
+        return "⛅ တိမ်အနည်းငယ်"
+    elif "cloudy" in s:
+        return "☁️ တိမ်ထူ/မိုးအုံ့"
+    elif "fog" in s:
+        return "🌫️ မြူဆိုင်း"
+    elif "thunder" in s:
+        return "⛈️ မိုးကြိုး"
+    elif "rain" in s or "sleet" in s:
+        return "🌧️ မိုးရွာ"
+    return "🌤️ ပုံမှန်"
+
 MONTH_MAP = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
     "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
@@ -452,7 +468,6 @@ MM_MONTHS_WIKI = [
 ]
 
 async def translate_en_to_my(session, text: str) -> str:
-    # 1. Primary: Gemini API
     if GEMINI_API_KEY:
         try:
             g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -478,7 +493,6 @@ async def translate_en_to_my(session, text: str) -> str:
         except Exception as e:
             print(f"⚠️ Gemini Translate ERR: {e}")
 
-    # 2. Backup: Google Translate
     try:
         t_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={quote(text)}"
         async with session.get(t_url, timeout=10) as resp:
@@ -540,45 +554,45 @@ async def fetch_on_this_day(session, now: datetime.datetime):
                 mm_events = []
                 short_world = []
                 for ev in events:
-                    year = ev.get("year", "")
+                    year = str(ev.get("year", ""))
                     text = ev.get("text", "").strip()
                     if not text or len(text) > 130:
                         continue
                     if any(k in text.lower() for k in mm_keywords):
                         mm_events.append((year, text, "🇲🇲"))
-                    elif str(year).isdigit() and int(year) >= 1850:
+                    elif year.isdigit() and int(year) >= 1850:
                         short_world.append((year, text, "🌍"))
 
                 pool = mm_events if mm_events else short_world
                 if not pool:
                     ev = events[0]
-                    pool = [(ev.get("year", ""), ev.get("text", "")[:125], "🌍")]
+                    pool = [(str(ev.get("year", "")), ev.get("text", "")[:125], "🌍")]
 
                 year, en_text, flag = random.choice(pool[:8])
                 my_text = await translate_en_to_my(session, en_text)
                 if my_text:
-                    mm_year = to_myanmar_digits(int(year)) if str(year).isdigit() else str(year)
+                    mm_year = to_myanmar_digits(int(year)) if year.isdigit() else year
                     cache_data["history_date"] = date_key
                     cache_data["history_text"] = f"{flag} **({mm_year} ခုနှစ်)** {my_text}"
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ History ERR: {e}")
 
-# ================= RELIABLE WEATHER, MARKET & DAILY FOOTBALL =================
+# ================= DUAL-SOURCE WEATHER (OPEN-METEO + MET.NO NORWAY) =================
 async def fetch_regions_weather_reliable(session, regions_data) -> tuple:
     all_cities = []
     for region_title, cities in regions_data:
         for name, lat, lon in cities:
             all_cities.append((region_title, name, lat, lon))
 
-    lats = ",".join(str(c[2]) for c in all_cities)
-    lons = ",".join(str(c[3]) for c in all_cities)
-    # Open-Meteo v1 current endpoint (supports multi-coordinate reliably)
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
-
     results_map = {}
     ok_count = 0
+
+    # 1. Primary: Open-Meteo Batch
     try:
-        async with session.get(url, timeout=18) as resp:
+        lats = ",".join(str(c[2]) for c in all_cities)
+        lons = ",".join(str(c[3]) for c in all_cities)
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
+        async with session.get(url, timeout=12) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 if isinstance(data, dict):
@@ -590,29 +604,30 @@ async def fetch_regions_weather_reliable(session, regions_data) -> tuple:
                         desc = decode_wmo_weather(curr.get("weather_code", 0))
                         results_map[idx] = f"`{temp}°C` ({desc})"
                         ok_count += 1
-    except Exception as e:
-        print(f"⚠️ Open-Meteo Batch ERR: {e}")
+    except Exception:
+        pass
 
-    # Fallback: If batch failed, query individually via Open-Meteo single endpoint
+    # 2. Fallback: MET Norway API (Zero IP block on Render/Cloud)
     if ok_count == 0:
-        async def fetch_one(idx, lat, lon):
-            u = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code"
-            try:
-                async with session.get(u, timeout=10) as r:
-                    if r.status == 200:
-                        d = await r.json()
-                        c = d.get("current", {})
-                        if "temperature_2m" in c:
-                            t = round(c["temperature_2m"])
-                            ds = decode_wmo_weather(c.get("weather_code", 0))
-                            return idx, f"`{t}°C` ({ds})"
-            except Exception:
-                pass
-            return idx, None
+        sem = asyncio.Semaphore(8)
+        async def fetch_metno(idx, lat, lon):
+            async with sem:
+                u = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
+                try:
+                    async with session.get(u, timeout=10) as r:
+                        if r.status == 200:
+                            d = await r.json()
+                            ts = d["properties"]["timeseries"][0]["data"]
+                            temp = round(ts["instant"]["details"]["air_temperature"])
+                            sym = ts.get("next_1_hours", {}).get("summary", {}).get("symbol_code", "fair")
+                            return idx, f"`{temp}°C` ({decode_metno_symbol(sym)})"
+                except Exception:
+                    pass
+                return idx, None
 
-        tasks = [fetch_one(i, c[2], c[3]) for i, c in enumerate(all_cities)]
-        single_res = await asyncio.gather(*tasks)
-        for idx, val in single_res:
+        tasks = [fetch_metno(i, c[2], c[3]) for i, c in enumerate(all_cities)]
+        met_res = await asyncio.gather(*tasks)
+        for idx, val in met_res:
             if val:
                 results_map[idx] = val
                 ok_count += 1
@@ -629,11 +644,12 @@ async def fetch_regions_weather_reliable(session, regions_data) -> tuple:
 
     return ok_count, "\n\n".join(sections)
 
+# ================= DAILY FOOTBALL (SEPARATE SINGLE-DATE QUERIES) =================
 async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
-    # မြန်မာည ၁၂:၀၀ ကျော်လျှင် ဥရောပ/US ဘက်တွင် ယမန်နေ့ရက်စွဲဖြစ်နေသေးသဖြင့် ၂ ရက်စာ ဆွဲယူရန်
+    # ESPN rejects date ranges (HTTP 400); query yesterday & today separately
     yest_str = (now - datetime.timedelta(days=1)).strftime("%Y%m%d")
     today_str = now.strftime("%Y%m%d")
-    date_range = f"{yest_str}-{today_str}"
+    query_dates = [yest_str, today_str]
 
     leagues = [
         ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
@@ -645,47 +661,53 @@ async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
     live_lines = []
     finished_lines = []
     upcoming_lines = []
+    seen_ids = set()
 
     window_start = now - datetime.timedelta(hours=14)
     window_end = now + datetime.timedelta(hours=20)
 
     for league_name, code in leagues:
-        try:
-            f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={date_range}"
-            async with session.get(f_url, timeout=10) as resp:
-                if resp.status == 200:
-                    f_data = await resp.json()
-                    for ev in f_data.get("events", []):
-                        try:
-                            utc_dt = datetime.datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=datetime.timezone.utc)
-                            mm_dt = utc_dt.astimezone(MM_TZ)
-                        except Exception:
-                            mm_dt = now
+        for d_str in query_dates:
+            try:
+                f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={d_str}"
+                async with session.get(f_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        f_data = await resp.json()
+                        for ev in f_data.get("events", []):
+                            ev_id = ev.get("id")
+                            if ev_id in seen_ids:
+                                continue
+                            seen_ids.add(ev_id)
 
-                        # လွန်ခဲ့တဲ့ ၁၄ နာရီမှ လာမယ့် ၂၀ နာရီအတွင်း ပွဲစဉ်များကိုသာ ပြမည်
-                        if not (window_start <= mm_dt <= window_end):
-                            continue
+                            try:
+                                utc_dt = datetime.datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=datetime.timezone.utc)
+                                mm_dt = utc_dt.astimezone(MM_TZ)
+                            except Exception:
+                                mm_dt = now
 
-                        status_type = ev["status"]["type"]["state"]
-                        comp = ev["competitions"][0]["competitors"]
-                        home_c = next((c for c in comp if c.get("homeAway") == "home"), comp[0])
-                        away_c = next((c for c in comp if c.get("homeAway") == "away"), comp[1])
+                            if not (window_start <= mm_dt <= window_end):
+                                continue
 
-                        home = home_c["team"]["abbreviation"]
-                        away = away_c["team"]["abbreviation"]
-                        h_score = home_c.get("score", "0")
-                        a_score = away_c.get("score", "0")
-                        detail = ev["status"]["type"]["shortDetail"]
+                            status_type = ev["status"]["type"]["state"]
+                            comp = ev["competitions"][0]["competitors"]
+                            home_c = next((c for c in comp if c.get("homeAway") == "home"), comp[0])
+                            away_c = next((c for c in comp if c.get("homeAway") == "away"), comp[1])
 
-                        if status_type == "in":
-                            live_lines.append(f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
-                        elif status_type == "post":
-                            finished_lines.append(f"✅ {league_name}: **{home} {h_score} - {a_score} {away}** `(FT)`")
-                        elif status_type == "pre":
-                            mm_time = mm_dt.strftime("%I:%M %p")
-                            upcoming_lines.append(f"⏳ {league_name}: {home} vs {away} `({mm_time})`")
-        except Exception:
-            pass
+                            home = home_c["team"]["abbreviation"]
+                            away = away_c["team"]["abbreviation"]
+                            h_score = home_c.get("score", "0")
+                            a_score = away_c.get("score", "0")
+                            detail = ev["status"]["type"]["shortDetail"]
+
+                            if status_type == "in":
+                                live_lines.append(f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
+                            elif status_type == "post":
+                                finished_lines.append(f"✅ {league_name}: **{home} {h_score} - {a_score} {away}** `(FT)`")
+                            elif status_type == "pre":
+                                mm_time = mm_dt.strftime("%I:%M %p")
+                                upcoming_lines.append(f"⏳ {league_name}: {home} vs {away} `({mm_time})`")
+            except Exception:
+                pass
 
     all_matches = live_lines + finished_lines + upcoming_lines
     total_count = len(all_matches)
