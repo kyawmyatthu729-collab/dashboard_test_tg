@@ -267,74 +267,96 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
     m_j = m + 12 * a - 3
     jdn = d + (153 * m_j + 2) // 5 + 365 * y_j + y_j // 4 - y_j // 100 + y_j // 400 - 32045
 
-    SY = 1577917828.0 / 4320000.0
-    MO = 1954168.050623
-    my = math.floor((jdn - 0.5 - MO) / SY)
+    def to_jdn(yy, mm_g, dd_g):
+        aa = (14 - mm_g) // 12
+        yy_j = yy + 4800 - aa
+        mm_j = mm_g + 12 * aa - 3
+        return dd_g + (153 * mm_j + 2) // 5 + 365 * yy_j + yy_j // 4 - yy_j // 100 + yy_j // 400 - 32045
 
-    def get_my_const(year):
-        # ၁၃၈၀ မှ ၁၃၉၅ အထိ တိကျသော ဝါထပ်/ရက်ငင်ဇယား
-        # (watat: 0=ပုံမှန်, 1=ဝါထပ် | wte: 0=ဝါငယ်ထပ်, 1=ဝါကြီးထပ်)
-        exact_table = {
-            1380: (1, 0), 1381: (0, 0), 1382: (1, 0), 1383: (0, 0),
-            1384: (0, 0), 1385: (1, 1), 1386: (0, 0), 1387: (0, 0),
-            1388: (1, 0), 1389: (0, 0), 1390: (0, 0), 1391: (1, 1),
-            1392: (0, 0), 1393: (1, 0), 1394: (0, 0), 1395: (0, 0)
-        }
-        WO = -0.5 if year >= 1312 else (-1.1 if year >= 1217 else -0.85)
-        ed = (SY * (year + 3739)) % 29.530587946
-        if ed < 13.765293973:
-            ed += 29.530587946
+    # မြန်မာသက္ကရာဇ်အလိုက် (တန်ခူးလဆန်း ၁ ရက် JDN, ဝါထပ် [0/1], ဝါကြီးရက်ငင် [0/1])
+    # ၁၃၈၈ ခုနှစ် တန်ခူးလဆန်း ၁ ရက် = 2026-03-19 (သင်္ကြန်အတက် 2026-04-16 နှောင်းတန်ခူး ၂၉)
+    # လအလိုက် မှန်ကန်စေရန် မြန်မာနှစ်စ (တန်ခူးလဆန်း ၁ ရက်) JDN ကို တိုက်ရိုက်သတ်မှတ်ထားသည်
+    YEAR_TABLE = {
+        1386: (to_jdn(2024, 4, 9), 0, 0),
+        1387: (to_jdn(2025, 3, 29), 0, 0),
+        1388: (to_jdn(2026, 3, 19), 1, 0),  # ၁၃၈၈ (၂၀၂၆) ဒုတိယဝါဆို ထပ်နှစ်
+        1389: (to_jdn(2027, 4, 7), 0, 0),
+        1390: (to_jdn(2028, 3, 26), 0, 0),
+        1391: (to_jdn(2029, 3, 16), 1, 1),
+        1392: (to_jdn(2030, 4, 4), 0, 0),
+        1393: (to_jdn(2031, 3, 25), 1, 0),
+        1394: (to_jdn(2032, 4, 12), 0, 0),
+        1395: (to_jdn(2033, 4, 1), 0, 0),
+    }
 
-        if year in exact_table:
-            watat, wte = exact_table[year]
-        else:
-            watat = 1 if (year >= 1312 and ed >= (29.530587946 - 13.765293973)) else 0
-            wte = 0
-
-        fm = round(SY * year + MO - ed + 4.5 * watat + WO)
-        return watat, fm, wte
-
-    watat, fm, wte = get_my_const(my)
-    prev_watat, prev_fm, prev_wte = get_my_const(my - 1)
-    # နှစ်ဆန်း ၁ ရက်နေ့ JDN (ယခင်နှစ် ဝါဆိုလပြည့် + ၂၅၉ + ဝါထပ်ရက်)
-    tg1 = prev_fm + 259 + prev_watat * 30 + prev_wte
-
-    if jdn < tg1:
+    my = y - 638
+    if my in YEAR_TABLE and jdn < YEAR_TABLE[my][0]:
         my -= 1
-        watat, fm, wte = prev_watat, prev_fm, prev_wte
-        prev_watat, prev_fm, prev_wte = get_my_const(my - 1)
-        tg1 = prev_fm + 259 + prev_watat * 30 + prev_wte
 
-    dd = jdn - tg1 + 1
-    b = wte
-    c = 1 if watat == 1 else 0
-    myl = 354 + c * 30 + b
-    mmt = (dd - 1) // myl
-    dd -= mmt * myl
-    a = (dd + 423) // 512
-    mm = int((dd - b * a + c * a * 30 + 29.26) // 29.544)
-    e = (mm + 12) // 16
-    f = (mm + 11) // 16
-    md = int(dd - math.floor(29.544 * mm - 29.26) - b * e + c * f * 30)
-    mm += f * 3 - e * 4
-
-    month_names = [
-        "", "တန်ခူး", "ကဆုန်", "နယုန်", "ဝါဆို", "ဝါခေါင်", "တော်သလင်း",
-        "သီတင်းကျွတ်", "တန်ဆောင်မုန်း", "နတ်တော်", "ပြာသို", "တပို့တွဲ", "တပေါင်း",
-        "နှောင်းတန်ခူး", "နှောင်းကဆုန်"
-    ]
-    if mm == 4 and watat == 1:
-        m_str = "ဒုတိယဝါဆို"
-    elif mm == 0:
-        m_str = "ပထမဝါဆို"
-    elif 1 <= mm <= 14:
-        m_str = month_names[mm]
+    if my in YEAR_TABLE:
+        tg1, watat, wte = YEAR_TABLE[my]
     else:
-        m_str = "တန်ဆောင်မုန်း"
+        SY = 1577917828.0 / 4320000.0
+        MO = 1954168.050623
+        my = math.floor((jdn - 0.5 - MO) / SY)
+        tg1 = round(MO + SY * my) - 13
+        watat, wte = 0, 0
+
+    dd = jdn - tg1 + 1  # နှစ်စမှ စ၍ ရက်ပေါင်း (တန်ခူးလဆန်း ၁ ရက် = 1)
+
+    # လအလိုက် ရက်အရေအတွက် ဇယား
+    if watat == 0:
+        # ပုံမှန်နှစ် (၁၂ လ = ၃၅၄ ရက်)
+        months_days = [
+            (1, "တန်ခူး", 29),
+            (2, "ကဆုန်", 30),
+            (3, "နယုန်", 29),
+            (4, "ဝါဆို", 30),
+            (5, "ဝါခေါင်", 29),
+            (6, "တော်သလင်း", 30),
+            (7, "သီတင်းကျွတ်", 29),
+            (8, "တန်ဆောင်မုန်း", 30),
+            (9, "နတ်တော်", 29),
+            (10, "ပြာသို", 30),
+            (11, "တပို့တွဲ", 29),
+            (12, "တပေါင်း", 30),
+        ]
+    else:
+        # ဝါထပ်နှစ် (၁၃ လ = ၃၈၄ သို့မဟုတ် ၃၈၅ ရက်)
+        nayon_days = 30 if wte == 1 else 29
+        months_days = [
+            (1, "တန်ခူး", 29),
+            (2, "ကဆုန်", 30),
+            (3, "နယုန်", nayon_days),
+            (0, "ပထမဝါဆို", 30),
+            (4, "ဒုတိယဝါဆို", 30),
+            (5, "ဝါခေါင်", 29),
+            (6, "တော်သလင်း", 30),
+            (7, "သီတင်းကျွတ်", 29),
+            (8, "တန်ဆောင်မုန်း", 30),
+            (9, "နတ်တော်", 29),
+            (10, "ပြာသို", 30),
+            (11, "တပို့တွဲ", 29),
+            (12, "တပေါင်း", 30),
+        ]
+
+    mm = 8
+    m_str = "တန်ဆောင်မုန်း"
+    md = 1
+    rem = dd
+    for m_idx, name, days_in_m in months_days:
+        if rem <= days_in_m:
+            mm = m_idx
+            m_str = name
+            md = rem
+            break
+        rem -= days_in_m
 
     if md == 15:
         phase_str = "လပြည့်နေ့"
-    elif md >= 29:
+    elif md >= 29 and (
+        (mm in [1, 3, 5, 7, 9, 11] and not (mm == 3 and wte == 1)) or md == 30
+    ):
         phase_str = "လကွယ်နေ့"
     elif md < 15:
         phase_str = f"လဆန်း {to_myanmar_digits(md)} ရက်"
@@ -349,7 +371,7 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
     if (dt.month, dt.day) in FIXED_OBSERVANCES:
         events.append(FIXED_OBSERVANCES[(dt.month, dt.day)])
 
-    is_sabbath = md in [8, 15, 23] or md >= 29
+    is_sabbath = md in [8, 15, 23] or "လကွယ်" in phase_str
     if events:
         obs_line = f"🎊 **ယနေ့ အထိမ်းအမှတ်:** {' | '.join(events)}"
         if is_sabbath and md != 15:
