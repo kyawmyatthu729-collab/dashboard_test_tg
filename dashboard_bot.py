@@ -126,7 +126,7 @@ OTHER_REGIONS = [
 cache_data = {
     "weather_main": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "weather_other": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
-    "market": "• 🪙 **Gold Spot:** `-`\n• **BTC:** `-` | **BNB:** `-`\n• **SOL:** `-` | **TON:** `-`",
+    "market": "• 🪙 **Gold Spot:** `-`\n• ₿ **BTC:** `-` | **BNB:** `-`\n• 💎 **SOL:** `-` | **TON:** `-`",
     "football": "လက်ရှိ အနီးစပ်ဆုံး ပွဲစဉ်များ မရှိသေးပါ ⚽",
     "history_date": "",
     "history_text": "",
@@ -137,16 +137,20 @@ app = Client("dashboard_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TO
 owner_only = filters.user(OWNER_ID)
 
 def get_http_session():
-    connector = aiohttp.TCPConnector(ssl=False, limit=10)
+    connector = aiohttp.TCPConnector(ssl=False, limit=15)
+    # Wikipedia API requires a descriptive User-Agent to avoid HTTP 403
     headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "MyanmarDashboardBot/1.0 (Telegram Group Billboard; contact@example.com)",
         "Accept": "application/json"
     }
     return aiohttp.ClientSession(connector=connector, headers=headers)
 
-# ================= USER RESOLVER & CLICKABLE MENTION =================
+# ================= USER RESOLVER & SAFE MARKDOWN MENTION =================
+def clean_md(text: str) -> str:
+    return re.sub(r"[\[\]\*_`~]", "", str(text)).strip() or "User"
+
 def user_link(uid: int, name: str) -> str:
-    safe_name = str(name).replace("[", "").replace("]", "")
+    safe_name = clean_md(name)
     return f"[{safe_name}](tg://user?id={uid})"
 
 async def resolve_user_target(target: str):
@@ -453,10 +457,10 @@ async def translate_en_to_my(session, text: str) -> str:
             if resp.status == 200:
                 data = await resp.json()
                 translated = "".join(part[0] for part in data[0] if part[0])
-                return translated.strip()
+                return clean_md(translated)
     except Exception:
         pass
-    return text
+    return clean_md(text)
 
 async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
     title = f"{MM_MONTHS_WIKI[now.month]}_{to_myanmar_digits(now.day)}"
@@ -476,7 +480,7 @@ async def fetch_myanmar_wiki_event(session, now: datetime.datetime) -> str:
                         if lines:
                             chosen = random.choice(lines)
                             chosen = re.sub(r"^\*\s*", "", chosen)
-                            return f"🇲🇲 {chosen}"
+                            return f"🇲🇲 {clean_md(chosen)}"
     except Exception:
         pass
     return ""
@@ -511,7 +515,7 @@ async def fetch_on_this_day(session, now: datetime.datetime):
                         continue
                     if any(k in text.lower() for k in mm_keywords):
                         mm_events.append((year, text, "🇲🇲"))
-                    elif int(year) >= 1850:
+                    elif str(year).isdigit() and int(year) >= 1850:
                         short_world.append((year, text, "🌍"))
 
                 pool = mm_events if mm_events else short_world
@@ -526,48 +530,45 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     except Exception:
         pass
 
-# ================= DUAL-FALLBACK EXTERNAL DATA FETCHERS =================
-async def fetch_single_city_weather(session, name: str, lat: float, lon: float) -> tuple:
-    # Primary: Open-Meteo
-    url1 = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-    try:
-        async with session.get(url1, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                cw = data.get("current_weather", {})
-                if "temperature" in cw:
-                    temp = round(cw["temperature"])
-                    desc = decode_wmo_weather(cw.get("weathercode", 0))
-                    return True, f"• {name}: `{temp}°C` ({desc})"
-    except Exception:
-        pass
-
-    # Fallback: wttr.in JSON API
-    url2 = f"https://wttr.in/{lat},{lon}?format=j1"
-    try:
-        async with session.get(url2, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                curr = data["current_condition"][0]
-                temp = curr["temp_C"]
-                return True, f"• {name}: `{temp}°C` (🌤️ ပုံမှန်)"
-    except Exception:
-        pass
-
-    return False, f"• {name}: `-`"
-
-async def fetch_regions_weather(session, regions_data) -> tuple:
-    sections = []
-    ok_count = 0
+# ================= BATCH WEATHER + RELIABLE MARKET & SPORTS =================
+async def fetch_regions_weather_batch(session, regions_data) -> tuple:
+    all_cities = []
     for region_title, cities in regions_data:
-        tasks = [fetch_single_city_weather(session, name, lat, lon) for name, lat, lon in cities]
-        results = await asyncio.gather(*tasks)
+        for name, lat, lon in cities:
+            all_cities.append((region_title, name, lat, lon))
+
+    lats = ",".join(str(c[2]) for c in all_cities)
+    lons = ",".join(str(c[3]) for c in all_cities)
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current_weather=true"
+
+    results_map = {}
+    ok_count = 0
+    try:
+        async with session.get(url, timeout=15) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if isinstance(data, dict):
+                    data = [data]
+                for idx, item in enumerate(data):
+                    cw = item.get("current_weather", {})
+                    if "temperature" in cw:
+                        temp = round(cw["temperature"])
+                        desc = decode_wmo_weather(cw.get("weathercode", 0))
+                        results_map[idx] = f"`{temp}°C` ({desc})"
+                        ok_count += 1
+    except Exception:
+        pass
+
+    sections = []
+    idx_counter = 0
+    for region_title, cities in regions_data:
         city_lines = []
-        for is_ok, line in results:
-            if is_ok:
-                ok_count += 1
-            city_lines.append(line)
+        for name, _, _ in cities:
+            val = results_map.get(idx_counter, "`-`")
+            city_lines.append(f"• {name}: {val}")
+            idx_counter += 1
         sections.append(f"**{region_title}**\n" + "\n".join(city_lines))
+
     return ok_count, "\n\n".join(sections)
 
 async def update_external_data() -> str:
@@ -577,31 +578,61 @@ async def update_external_data() -> str:
         await fetch_on_this_day(session, get_now())
         logs.append(f"📜 History: {'OK' if cache_data['history_text'] else 'Empty'}")
 
-        # 1. Weather
+        # 1. Batch Weather (Single HTTP request per page -> Zero rate limit)
         try:
-            ok1, main_w = await fetch_regions_weather(session, MAIN_REGIONS)
+            ok1, main_w = await fetch_regions_weather_batch(session, MAIN_REGIONS)
             if ok1 > 0:
                 cache_data["weather_main"] = main_w
-            ok2, other_w = await fetch_regions_weather(session, OTHER_REGIONS)
+            ok2, other_w = await fetch_regions_weather_batch(session, OTHER_REGIONS)
             if ok2 > 0:
                 cache_data["weather_other"] = other_w
             logs.append(f"🌤 Weather: {ok1 + ok2}/45 cities OK")
         except Exception as e:
             logs.append(f"🌤 Weather ERR: {e}")
 
-        # 2. Gold & Crypto (Primary: CryptoCompare | Fallback: Kraken + KuCoin)
+        # 2. Gold & Crypto (Primary: Binance Public API | Fallback: CoinGecko)
         market_ok = False
         try:
-            cc_url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms=PAXG,BTC,BNB,SOL,TON&tsyms=USD"
-            async with session.get(cc_url, timeout=12) as resp:
+            b_url = 'https://api.binance.com/api/v3/ticker/price?symbols=["PAXGUSDT","BTCUSDT","BNBUSDT","SOLUSDT","TONUSDT"]'
+            async with session.get(b_url, timeout=12) as resp:
                 if resp.status == 200:
-                    d = await resp.json()
-                    if "BTC" in d:
-                        gold = d.get("PAXG", {}).get("USD")
-                        btc = d.get("BTC", {}).get("USD")
-                        bnb = d.get("BNB", {}).get("USD")
-                        sol = d.get("SOL", {}).get("USD")
-                        ton = d.get("TON", {}).get("USD")
+                    arr = await resp.json()
+                    prices = {item["symbol"]: float(item["price"]) for item in arr}
+                    gold = prices.get("PAXGUSDT")
+                    btc = prices.get("BTCUSDT")
+                    bnb = prices.get("BNBUSDT")
+                    sol = prices.get("SOLUSDT")
+                    ton = prices.get("TONUSDT")
+
+                    g_str = f"${gold:,.0f}/oz" if gold else "-"
+                    btc_str = f"${btc:,.0f}" if btc else "-"
+                    bnb_str = f"${bnb:,.0f}" if bnb else "-"
+                    sol_str = f"${sol:,.2f}" if sol else "-"
+                    ton_str = f"${ton:,.2f}" if ton else "-"
+
+                    cache_data["market"] = (
+                        f"• 🪙 **Gold Spot:** `{g_str}`\n"
+                        f"• ₿ **BTC:** `{btc_str}` | **BNB:** `{bnb_str}`\n"
+                        f"• 💎 **SOL:** `{sol_str}` | **TON:** `{ton_str}`"
+                    )
+                    market_ok = True
+                    logs.append("💹 Market (Binance): OK")
+                else:
+                    logs.append(f"💹 Binance HTTP {resp.status}")
+        except Exception as e:
+            logs.append(f"💹 Binance ERR: {e}")
+
+        if not market_ok:
+            try:
+                cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=pax-gold,bitcoin,binancecoin,solana,the-open-network&vs_currencies=usd"
+                async with session.get(cg_url, timeout=12) as resp:
+                    if resp.status == 200:
+                        d = await resp.json()
+                        gold = d.get("pax-gold", {}).get("usd")
+                        btc = d.get("bitcoin", {}).get("usd")
+                        bnb = d.get("binancecoin", {}).get("usd")
+                        sol = d.get("solana", {}).get("usd")
+                        ton = d.get("the-open-network", {}).get("usd")
 
                         g_str = f"${gold:,.0f}/oz" if gold else "-"
                         btc_str = f"${btc:,.0f}" if btc else "-"
@@ -615,39 +646,9 @@ async def update_external_data() -> str:
                             f"• 💎 **SOL:** `{sol_str}` | **TON:** `{ton_str}`"
                         )
                         market_ok = True
-                        logs.append("💹 Market (CryptoCompare): OK")
-                else:
-                    logs.append(f"💹 CryptoCompare HTTP {resp.status}")
-        except Exception as e:
-            logs.append(f"💹 CryptoCompare ERR: {e}")
-
-        if not market_ok:
-            # Backup: Kraken Public Ticker (US-Based, Zero Block)
-            try:
-                k_url = "https://api.kraken.com/0/public/Ticker?pair=PAXGUSD,XBTUSD,SOLUSD,TONUSD"
-                async with session.get(k_url, timeout=12) as resp:
-                    if resp.status == 200:
-                        kd = await resp.json()
-                        res = kd.get("result", {})
-                        gold = float(res.get("PAXGUSD", {}).get("c", [0])[0])
-                        btc = float(res.get("XXBTZUSD", res.get("XBTUSD", {})).get("c", [0])[0])
-                        sol = float(res.get("SOLUSD", {}).get("c", [0])[0])
-                        ton = float(res.get("TONUSD", {}).get("c", [0])[0])
-
-                        g_str = f"${gold:,.0f}/oz" if gold else "-"
-                        btc_str = f"${btc:,.0f}" if btc else "-"
-                        sol_str = f"${sol:,.2f}" if sol else "-"
-                        ton_str = f"${ton:,.2f}" if ton else "-"
-
-                        cache_data["market"] = (
-                            f"• 🪙 **Gold Spot:** `{g_str}`\n"
-                            f"• ₿ **BTC:** `{btc_str}` | **SOL:** `{sol_str}`\n"
-                            f"• 💎 **TON:** `{ton_str}`"
-                        )
-                        market_ok = True
-                        logs.append("💹 Market (Kraken Backup): OK")
+                        logs.append("💹 Market (CoinGecko): OK")
             except Exception as e:
-                logs.append(f"💹 Kraken Backup ERR: {e}")
+                logs.append(f"💹 CoinGecko ERR: {e}")
 
         # 3. Football Live & Scores (ESPN)
         leagues = [
@@ -712,8 +713,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                 parse_mode=ParseMode.MARKDOWN,
                 **topic_arg
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ HBD Send ERR: {e}")
 
     if today_annis:
         for yrs, r in today_annis:
@@ -730,8 +731,8 @@ async def send_daily_celebrations(now: datetime.datetime):
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ Anni Send ERR: {e}")
 
     state["wished_date"] = today_key
 
@@ -754,8 +755,8 @@ async def check_daily_rollover(now: datetime.datetime):
                     parse_mode=ParseMode.MARKDOWN,
                     **topic_arg
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ Top3 Send ERR: {e}")
         state["chat_counts"] = {}
         state["current_date"] = today_key
     elif not state["current_date"]:
@@ -872,6 +873,7 @@ async def rotate_board_page():
     except FloodWait as e:
         await asyncio.sleep(e.value)
     except Exception as e:
+        print(f"⚠️ Rotate edit ERR: {e}")
         if "MESSAGE_ID_INVALID" in str(e) or "Message to edit not found" in str(e):
             await spawn_new_board()
 
@@ -887,7 +889,6 @@ async def cmd_spawn_board(client, message):
     else:
         await message.reply("✅ သတ်မှတ်ထားသော Topic အခန်းထဲတွင် Board အသစ် ထုတ်ပြီး Pin တင်လိုက်ပါပြီ။")
 
-# API Diagnostic & Force Refresh Command (/testapi)
 @app.on_message(filters.command("testapi") & owner_only)
 async def cmd_test_api(client, message):
     wait_msg = await message.reply("⏳ API များအားလုံးကို စမ်းသပ်ဆွဲယူနေပါသည်...")
@@ -897,7 +898,8 @@ async def cmd_test_api(client, message):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{status_report}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"**Market Preview:**\n{cache_data['market']}"
+        f"**Market Preview:**\n{cache_data['market']}\n\n"
+        f"**History Preview:**\n{cache_data['history_text'] or 'Empty'}"
     )
 
 # 1. Manual Unified Backup & Restore (/backup & /restore)
@@ -995,7 +997,7 @@ async def delete_birthday(client, message):
 
     if query.isdigit() and 1 <= int(query) <= len(state["birthdays"]):
         removed = state["birthdays"].pop(int(query) - 1)
-        return await message.reply(f"🗑️ **{removed['name']}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
+        return await message.reply(f"🗑️ **{clean_md(removed['name'])}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
 
     before_len = len(state["birthdays"])
     state["birthdays"] = [
@@ -1006,7 +1008,7 @@ async def delete_birthday(client, message):
     ]
     if len(state["birthdays"]) == before_len:
         return await message.reply(f"❌ `{query}` ဖြင့် မွေးနေ့စာရင်း မတွေ့ပါ။ (`/hbdlist` ဖြင့် ပြန်စစ်ပါ)")
-    await message.reply(f"🗑️ **{query}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
+    await message.reply(f"🗑️ **{clean_md(query)}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
 
 # 3. Relationship Management (/addrs, /rslist, /delrs)
 @app.on_message(filters.command("addrs") & owner_only)
@@ -1070,7 +1072,7 @@ async def delete_relationship(client, message):
 
     if query.isdigit() and 1 <= int(query) <= len(state["relationships"]):
         removed = state["relationships"].pop(int(query) - 1)
-        return await message.reply(f"💔 **{removed['name1']} & {removed['name2']}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
+        return await message.reply(f"💔 **{clean_md(removed['name1'])} & {clean_md(removed['name2'])}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
 
     kept = []
     removed_pairs = []
@@ -1086,7 +1088,7 @@ async def delete_relationship(client, message):
             or r.get("user2", "").lower() == clean_q
         )
         if match_p1 or match_p2:
-            removed_pairs.append(f"{r['name1']} & {r['name2']}")
+            removed_pairs.append(f"{clean_md(r['name1'])} & {clean_md(r['name2'])}")
         else:
             kept.append(r)
 
