@@ -437,7 +437,7 @@ async def send_daily_celebrations(now: datetime.datetime):
     if state.get("wished_date") == today_key:
         return
 
-    topic_arg = {"message_thread_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
+    topic_arg = {"reply_to_message_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
     today_bdays = get_today_birthdays(now)
     today_annis = get_today_anniversaries(now)
 
@@ -487,7 +487,7 @@ async def check_daily_rollover(now: datetime.datetime):
             medals = ["🥇", "🥈", "🥉"]
             lines = "\n".join([f"{medals[i]} **{user_link(int(uid), u['name'])}** — `{u['count']} msgs`" for i, (uid, u) in enumerate(sorted_yest)])
             try:
-                topic_arg = {"message_thread_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
+                topic_arg = {"reply_to_message_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
                 await app.send_message(
                     TARGET_GROUP_ID,
                     f"🌟 **မနေ့က ({state['current_date']}) စကားအများဆုံးပြောခဲ့သူများ** 🌟\n"
@@ -586,7 +586,7 @@ async def spawn_new_board():
     if not state["current_date"]:
         state["current_date"] = get_now().strftime("%Y-%m-%d")
 
-    topic_arg = {"message_thread_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
+    topic_arg = {"reply_to_message_id": TARGET_TOPIC_ID} if TARGET_TOPIC_ID else {}
     sent = await app.send_message(
         chat_id=TARGET_GROUP_ID,
         text=render_page(0),
@@ -762,7 +762,6 @@ async def add_relationship(client, message):
     if not uid2:
         return await message.reply(f"❌ `{target2}` အကောင့်ကို ရှာမတွေ့ပါ။ `@username` သို့မဟုတ် User ID အမှန်ထည့်ပါ။")
 
-    # ရှိပြီးသား အတွဲဟောင်းထဲ ပါနေရင် ရှင်းထုတ်မည်
     state["relationships"] = [
         r for r in state["relationships"]
         if int(r["uid1"]) not in (uid1, uid2) and int(r["uid2"]) not in (uid1, uid2)
@@ -805,7 +804,6 @@ async def delete_relationship(client, message):
         await save_state()
         return await message.reply(f"💔 **{removed['name1']} & {removed['name2']}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
 
-    # ဘယ်တစ်ယောက်ကို ဖြုတ်ဖြုတ် သူပါဝင်နေတဲ့ အတွဲတစ်ခုလုံး ပြုတ်သွားမည်
     kept = []
     removed_pairs = []
     for r in state["relationships"]:
