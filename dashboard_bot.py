@@ -57,76 +57,7 @@ DEFAULT_STATE = {
 
 state = DEFAULT_STATE.copy()
 
-# ၁။ အဓိက မြို့ကြီး ၁၅ မြို့
-MAIN_REGIONS = [
-    ("📍 ပြည်ထောင်စုနယ်မြေ", [
-        ("နေပြည်တော်", 19.7633, 96.0785),
-    ]),
-    ("📍 အောက်မြန်မာပြည်", [
-        ("ရန်ကုန်", 16.8409, 96.1735),
-        ("ပဲခူး", 17.3352, 96.4814),
-        ("ပုသိမ်", 16.7792, 94.7321),
-        ("မော်လမြိုင်", 16.4905, 97.6283),
-        ("ဘားအံ", 16.8906, 97.6348),
-    ]),
-    ("📍 အထက်မြန်မာပြည်", [
-        ("မန္တလေး", 21.9588, 96.0891),
-        ("မကွေး", 20.1496, 94.9325),
-        ("မုံရွာ", 22.1086, 95.1358),
-        ("မြစ်ကြီးနား", 25.3833, 97.4000),
-    ]),
-    ("📍 တောင်ပေါ်နှင့် ကမ်းရိုးတန်း", [
-        ("တောင်ကြီး", 20.7892, 97.0378),
-        ("လွိုင်ကော်", 19.6742, 97.2094),
-        ("ဟားခါး", 22.6445, 93.6108),
-        ("စစ်တွေ", 20.1462, 92.8984),
-        ("ထားဝယ်", 14.0823, 98.1915),
-    ])
-]
-
-# ၂။ အခြားမြို့ ၃၀ စာရင်း
-OTHER_REGIONS = [
-    ("🏔 ရှမ်းနှင့် ကချင်ဒေသ", [
-        ("ပြင်ဦးလွင်", 22.0350, 96.4568),
-        ("လားရှိုး", 22.9359, 97.7498),
-        ("မူဆယ်", 23.9922, 97.9022),
-        ("ကျိုင်းတုံ", 21.2936, 99.6078),
-        ("တာချီလိတ်", 20.4475, 99.8808),
-        ("ကလော", 20.6317, 96.5567),
-        ("ညောင်ရွှေ", 20.6606, 96.9317),
-        ("ဗန်းမော်", 24.2526, 97.2336),
-        ("ဖားကန့်", 25.6122, 96.3133),
-        ("ပူတာအို", 27.3333, 97.4167),
-    ]),
-    ("🌾 အလယ်ပိုင်းနှင့် စစ်ကိုင်းဒေသ", [
-        ("မိတ္ထီလာ", 20.8778, 95.8584),
-        ("ပုဂံ/ညောင်ဦး", 21.1717, 94.8585),
-        ("ကျောက်ပန်းတောင်း", 20.8400, 95.1300),
-        ("ပခုက္ကူ", 21.3349, 95.0844),
-        ("ရေနံချောင်း", 20.4550, 94.8730),
-        ("ချောက်", 20.8961, 94.8186),
-        ("ရွှေဘို", 22.5692, 95.6982),
-        ("ကသာ", 24.1821, 96.3306),
-        ("ကလေး", 23.1888, 94.0512),
-        ("တမူး", 24.2167, 94.3167),
-    ]),
-    ("🌊 အောက်ပိုင်းနှင့် ကမ်းရိုးတန်းဒေသ", [
-        ("ပြည်", 18.8246, 95.2222),
-        ("တောင်ငူ", 18.9429, 96.4341),
-        ("မြဝတီ", 16.6891, 98.5089),
-        ("သထုံ", 16.9206, 97.3714),
-        ("ရေး", 15.2467, 97.8556),
-        ("မြိတ်", 12.4395, 98.6003),
-        ("ကော့သောင်း", 9.9833, 98.5500),
-        ("ကျောက်ဖြူ", 19.4264, 93.5488),
-        ("သံတွဲ", 18.4608, 94.3661),
-        ("မောင်တော", 20.8167, 92.3667),
-    ])
-]
-
 cache_data = {
-    "weather_main": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
-    "weather_other": "ရာသီဥတု အချက်အလက် ဆွဲယူနေပါသည်...",
     "market": "• 🪙 **Gold Spot:** `-`\n• ₿ **BTC:** `-` | **BNB:** `-`\n• 💎 **SOL:** `-` | **TON:** `-`",
     "football": "ယနေ့ ပွဲစဉ်များ မရှိသေးပါ ⚽",
     "history_date": "",
@@ -147,7 +78,7 @@ def get_http_session():
 
 # ================= USER RESOLVER & SAFE MARKDOWN MENTION =================
 def clean_md(text: str) -> str:
-    return re.sub(r"[\[\]\*_`~]", "", str(text)).strip() or "User"
+    return re.sub(r"[\[\]\*_`~#]", "", str(text)).strip() or "User"
 
 def user_link(uid: int, name: str) -> str:
     safe_name = clean_md(name)
@@ -273,13 +204,10 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
         mm_j = mm_g + 12 * aa - 3
         return dd_g + (153 * mm_j + 2) // 5 + 365 * yy_j + yy_j // 4 - yy_j // 100 + yy_j // 400 - 32045
 
-    # မြန်မာသက္ကရာဇ်အလိုက် (တန်ခူးလဆန်း ၁ ရက် JDN, ဝါထပ် [0/1], ဝါကြီးရက်ငင် [0/1])
-    # ၁၃၈၈ ခုနှစ် တန်ခူးလဆန်း ၁ ရက် = 2026-03-19 (သင်္ကြန်အတက် 2026-04-16 နှောင်းတန်ခူး ၂၉)
-    # လအလိုက် မှန်ကန်စေရန် မြန်မာနှစ်စ (တန်ခူးလဆန်း ၁ ရက်) JDN ကို တိုက်ရိုက်သတ်မှတ်ထားသည်
     YEAR_TABLE = {
         1386: (to_jdn(2024, 4, 9), 0, 0),
         1387: (to_jdn(2025, 3, 29), 0, 0),
-        1388: (to_jdn(2026, 3, 19), 1, 0),  # ၁၃၈၈ (၂၀၂၆) ဒုတိယဝါဆို ထပ်နှစ်
+        1388: (to_jdn(2026, 3, 19), 1, 0),
         1389: (to_jdn(2027, 4, 7), 0, 0),
         1390: (to_jdn(2028, 3, 26), 0, 0),
         1391: (to_jdn(2029, 3, 16), 1, 1),
@@ -302,41 +230,22 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
         tg1 = round(MO + SY * my) - 13
         watat, wte = 0, 0
 
-    dd = jdn - tg1 + 1  # နှစ်စမှ စ၍ ရက်ပေါင်း (တန်ခူးလဆန်း ၁ ရက် = 1)
+    dd = jdn - tg1 + 1
 
-    # လအလိုက် ရက်အရေအတွက် ဇယား
     if watat == 0:
-        # ပုံမှန်နှစ် (၁၂ လ = ၃၅၄ ရက်)
         months_days = [
-            (1, "တန်ခူး", 29),
-            (2, "ကဆုန်", 30),
-            (3, "နယုန်", 29),
-            (4, "ဝါဆို", 30),
-            (5, "ဝါခေါင်", 29),
-            (6, "တော်သလင်း", 30),
-            (7, "သီတင်းကျွတ်", 29),
-            (8, "တန်ဆောင်မုန်း", 30),
-            (9, "နတ်တော်", 29),
-            (10, "ပြာသို", 30),
-            (11, "တပို့တွဲ", 29),
-            (12, "တပေါင်း", 30),
+            (1, "တန်ခူး", 29), (2, "ကဆုန်", 30), (3, "နယုန်", 29),
+            (4, "ဝါဆို", 30), (5, "ဝါခေါင်", 29), (6, "တော်သလင်း", 30),
+            (7, "သီတင်းကျွတ်", 29), (8, "တန်ဆောင်မုန်း", 30), (9, "နတ်တော်", 29),
+            (10, "ပြာသို", 30), (11, "တပို့တွဲ", 29), (12, "တပေါင်း", 30),
         ]
     else:
-        # ဝါထပ်နှစ် (၁၃ လ = ၃၈၄ သို့မဟုတ် ၃၈၅ ရက်)
         nayon_days = 30 if wte == 1 else 29
         months_days = [
-            (1, "တန်ခူး", 29),
-            (2, "ကဆုန်", 30),
-            (3, "နယုန်", nayon_days),
-            (0, "ပထမဝါဆို", 30),
-            (4, "ဒုတိယဝါဆို", 30),
-            (5, "ဝါခေါင်", 29),
-            (6, "တော်သလင်း", 30),
-            (7, "သီတင်းကျွတ်", 29),
-            (8, "တန်ဆောင်မုန်း", 30),
-            (9, "နတ်တော်", 29),
-            (10, "ပြာသို", 30),
-            (11, "တပို့တွဲ", 29),
+            (1, "တန်ခူး", 29), (2, "ကဆုန်", 30), (3, "နယုန်", nayon_days),
+            (0, "ပထမဝါဆို", 30), (4, "ဒုတိယဝါဆို", 30), (5, "ဝါခေါင်", 29),
+            (6, "တော်သလင်း", 30), (7, "သီတင်းကျွတ်", 29), (8, "တန်ဆောင်မုန်း", 30),
+            (9, "နတ်တော်", 29), (10, "ပြာသို", 30), (11, "တပို့တွဲ", 29),
             (12, "တပေါင်း", 30),
         ]
 
@@ -386,7 +295,7 @@ def get_calendar_and_observance(dt: datetime.datetime) -> str:
 
     return "\n".join(lines)
 
-# ================= MANUAL STATE PERSISTENCE =================
+# ================= AUTOMATIC & MANUAL STATE PERSISTENCE =================
 async def load_state():
     global state
     try:
@@ -401,51 +310,20 @@ async def load_state():
     except Exception as e:
         print(f"⚠️ Load state error: {e}")
 
-async def save_backup_to_log(caption_text: str):
+async def save_backup_to_log(caption_text: str, keep_local: bool = False):
     with open(BACKUP_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     try:
         await app.send_document(LOG_CHANNEL_ID, document=BACKUP_FILE, caption=caption_text)
     except Exception as e:
         print(f"⚠️ Log Channel backup err: {e}")
+    finally:
+        if not keep_local and os.path.exists(BACKUP_FILE):
+            os.remove(BACKUP_FILE)
 
-# ================= WEATHER, BIRTHDAY & ANNIVERSARY HELPERS =================
+# ================= BIRTHDAY & ANNIVERSARY HELPERS =================
 def get_now():
     return datetime.datetime.now(MM_TZ)
-
-def decode_wmo_weather(code: int) -> str:
-    if code == 0:
-        return "☀️ နေသာ"
-    elif code in [1, 2]:
-        return "⛅ တိမ်အနည်းငယ်"
-    elif code == 3:
-        return "☁️ တိမ်ထူ/မိုးအုံ့"
-    elif code in [45, 48]:
-        return "🌫️ မြူဆိုင်း"
-    elif code in [51, 53, 55, 56, 57]:
-        return "🌦️ မိုးဖွဲကျ"
-    elif code in [61, 63, 65, 66, 67, 80, 81, 82]:
-        return "🌧️ မိုးရွာ"
-    elif code in [95, 96, 99]:
-        return "⛈️ မိုးကြိုး"
-    else:
-        return "🌤️ ပုံမှန်"
-
-def decode_metno_symbol(symbol: str) -> str:
-    s = symbol.lower()
-    if "clearsky" in s or "fair" in s:
-        return "☀️ နေသာ"
-    elif "partlycloudy" in s:
-        return "⛅ တိမ်အနည်းငယ်"
-    elif "cloudy" in s:
-        return "☁️ တိမ်ထူ/မိုးအုံ့"
-    elif "fog" in s:
-        return "🌫️ မြူဆိုင်း"
-    elif "thunder" in s:
-        return "⛈️ မိုးကြိုး"
-    elif "rain" in s or "sleet" in s:
-        return "🌧️ မိုးရွာ"
-    return "🌤️ ပုံမှန်"
 
 MONTH_MAP = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -604,96 +482,33 @@ async def fetch_on_this_day(session, now: datetime.datetime):
     except Exception as e:
         print(f"⚠️ History ERR: {e}")
 
-# ================= DUAL-SOURCE WEATHER (OPEN-METEO + MET.NO NORWAY) =================
-async def fetch_regions_weather_reliable(session, regions_data) -> tuple:
-    all_cities = []
-    for region_title, cities in regions_data:
-        for name, lat, lon in cities:
-            all_cities.append((region_title, name, lat, lon))
-
-    results_map = {}
-    ok_count = 0
-
-    # 1. Primary: Open-Meteo Batch
-    try:
-        lats = ",".join(str(c[2]) for c in all_cities)
-        lons = ",".join(str(c[3]) for c in all_cities)
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lats}&longitude={lons}&current=temperature_2m,weather_code"
-        async with session.get(url, timeout=12) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if isinstance(data, dict):
-                    data = [data]
-                for idx, item in enumerate(data):
-                    curr = item.get("current", {})
-                    if "temperature_2m" in curr:
-                        temp = round(curr["temperature_2m"])
-                        desc = decode_wmo_weather(curr.get("weather_code", 0))
-                        results_map[idx] = f"`{temp}°C` ({desc})"
-                        ok_count += 1
-    except Exception:
-        pass
-
-    # 2. Fallback: MET Norway API (Zero IP block on Render/Cloud)
-    if ok_count == 0:
-        sem = asyncio.Semaphore(8)
-        async def fetch_metno(idx, lat, lon):
-            async with sem:
-                u = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
-                try:
-                    async with session.get(u, timeout=10) as r:
-                        if r.status == 200:
-                            d = await r.json()
-                            ts = d["properties"]["timeseries"][0]["data"]
-                            temp = round(ts["instant"]["details"]["air_temperature"])
-                            sym = ts.get("next_1_hours", {}).get("summary", {}).get("symbol_code", "fair")
-                            return idx, f"`{temp}°C` ({decode_metno_symbol(sym)})"
-                except Exception:
-                    pass
-                return idx, None
-
-        tasks = [fetch_metno(i, c[2], c[3]) for i, c in enumerate(all_cities)]
-        met_res = await asyncio.gather(*tasks)
-        for idx, val in met_res:
-            if val:
-                results_map[idx] = val
-                ok_count += 1
-
-    sections = []
-    idx_counter = 0
-    for region_title, cities in regions_data:
-        city_lines = []
-        for name, _, _ in cities:
-            val = results_map.get(idx_counter, "`-`")
-            city_lines.append(f"• {name}: {val}")
-            idx_counter += 1
-        sections.append(f"**{region_title}**\n" + "\n".join(city_lines))
-
-    return ok_count, "\n\n".join(sections)
-
-# ================= DAILY FOOTBALL (SEPARATE SINGLE-DATE QUERIES) =================
+# ================= DAILY FOOTBALL (PRIORITY ORDER, FULL DAY MATCHES) =================
 async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
-    # ESPN rejects date ranges (HTTP 400); query yesterday & today separately
     yest_str = (now - datetime.timedelta(days=1)).strftime("%Y%m%d")
     today_str = now.strftime("%Y%m%d")
     query_dates = [yest_str, today_str]
 
+    # Priority order: EPL -> UCL -> La Liga -> Serie A -> Bundesliga
     leagues = [
-        ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL", "eng.1"),
+        ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "eng.1"),
+        ("🏆 Champions League", "uefa.champions"),
         ("🇪🇸 La Liga", "esp.1"),
-        ("🏆 UCL", "uefa.champions"),
         ("🇮🇹 Serie A", "ita.1"),
         ("🇩🇪 Bundesliga", "ger.1")
     ]
-    live_lines = []
-    finished_lines = []
-    upcoming_lines = []
-    seen_ids = set()
 
     window_start = now - datetime.timedelta(hours=14)
     window_end = now + datetime.timedelta(hours=20)
 
-    for league_name, code in leagues:
+    league_sections = []
+    total_count = 0
+
+    for league_title, code in leagues:
+        live_lines = []
+        finished_lines = []
+        upcoming_lines = []
+        seen_ids = set()
+
         for d_str in query_dates:
             try:
                 f_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{code}/scoreboard?dates={d_str}"
@@ -727,21 +542,29 @@ async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
                             detail = ev["status"]["type"]["shortDetail"]
 
                             if status_type == "in":
-                                live_lines.append(f"🔴 {league_name}: **{home} {h_score} - {a_score} {away}** `[{detail}]`")
+                                live_lines.append(f"• 🔴 **{home} {h_score} - {a_score} {away}** `[{detail}]`")
                             elif status_type == "post":
-                                finished_lines.append(f"✅ {league_name}: **{home} {h_score} - {a_score} {away}** `(FT)`")
+                                finished_lines.append(f"• ✅ **{home} {h_score} - {a_score} {away}** `(FT)`")
                             elif status_type == "pre":
                                 mm_time = mm_dt.strftime("%I:%M %p")
-                                upcoming_lines.append(f"⏳ {league_name}: {home} vs {away} `({mm_time})`")
+                                upcoming_lines.append(f"• ⏳ {home} vs {away} `({mm_time})`")
             except Exception:
                 pass
 
-    all_matches = live_lines + finished_lines + upcoming_lines
-    total_count = len(all_matches)
-    if not all_matches:
-        return 0, "ယနေ့ ပွဲစဉ်များ မရှိသေးပါ ⚽"
-    return total_count, "\n".join(all_matches[:12])
+        matches = live_lines + finished_lines + upcoming_lines
+        if matches:
+            total_count += len(matches)
+            league_sections.append(f"**{league_title}**\n" + "\n".join(matches))
 
+    if not league_sections:
+        return 0, "ယနေ့ ပွဲစဉ်များ မရှိသေးပါ ⚽"
+
+    full_text = "\n\n".join(league_sections)
+    if len(full_text) > 3600:
+        full_text = full_text[:3550] + "\n..."
+    return total_count, full_text
+
+# ================= EXTERNAL DATA UPDATER =================
 async def update_external_data() -> str:
     logs = []
     now = get_now()
@@ -750,19 +573,7 @@ async def update_external_data() -> str:
         await fetch_on_this_day(session, now)
         logs.append(f"📜 History: {'OK' if cache_data['history_text'] else 'Empty'}")
 
-        # 1. Weather (All 45 cities)
-        try:
-            ok1, main_w = await fetch_regions_weather_reliable(session, MAIN_REGIONS)
-            if ok1 > 0:
-                cache_data["weather_main"] = main_w
-            ok2, other_w = await fetch_regions_weather_reliable(session, OTHER_REGIONS)
-            if ok2 > 0:
-                cache_data["weather_other"] = other_w
-            logs.append(f"🌤 Weather: {ok1 + ok2}/45 cities OK")
-        except Exception as e:
-            logs.append(f"🌤 Weather ERR: {e}")
-
-        # 2. Gold & Crypto (Primary: Binance Public API | Fallback: CoinGecko)
+        # 1. Gold & Crypto (Primary: Binance Public API | Fallback: CoinGecko)
         market_ok = False
         try:
             b_url = 'https://api.binance.com/api/v3/ticker/price?symbols=["PAXGUSDT","BTCUSDT","BNBUSDT","SOLUSDT","TONUSDT"]'
@@ -822,7 +633,7 @@ async def update_external_data() -> str:
             except Exception as e:
                 logs.append(f"💹 CoinGecko ERR: {e}")
 
-        # 3. Football (1-day finished + live + upcoming)
+        # 2. Football (Priority order, full day matches)
         f_count, f_text = await fetch_daily_football(session, now)
         cache_data["football"] = f_text
         logs.append(f"⚽ Football ({now.strftime('%d %b')}): {f_count} matches OK")
@@ -900,13 +711,14 @@ async def check_daily_rollover(now: datetime.datetime):
                 print(f"⚠️ Top3 Send ERR: {e}")
         state["chat_counts"] = {}
         state["current_date"] = today_key
+        await save_backup_to_log(f"Auto Daily Backup: {today_key}")
     elif not state["current_date"]:
         state["current_date"] = today_key
 
     await send_daily_celebrations(now)
 
-# ================= AUTO-ROTATING PAGE RENDERER =================
-PAGES = ["home", "weather_main", "weather_other", "market_sports"]
+# ================= 2-PAGE AUTO-ROTATING RENDERER =================
+PAGES = ["home", "football"]
 
 def render_page(page_idx: int) -> str:
     now = get_now()
@@ -927,42 +739,23 @@ def render_page(page_idx: int) -> str:
             chat_lines = "_ဒီနေ့ စကားပြောသူ မရှိသေးပါ_"
 
         return (
-            f"📌 **GROUP LIVE BOARD** `[1/4 • 🏠 Home]`\n"
+            f"📌 **GROUP LIVE BOARD** `[1/2 • 🏠 Home]`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 **{date_str}**\n"
             f"{cal_info}\n\n"
             f"{events_block}\n\n"
+            f"📊 **Global Gold & Crypto Prices**\n"
+            f"{cache_data['market']}\n\n"
             f"🏆 **Today's Top Chatters**\n"
             f"{chat_lines}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔄 _စာမျက်နှာ အလိုအလျောက် ပြောင်းလဲပြသနေသည်_"
         )
 
-    elif page_key == "weather_main":
+    elif page_key == "football":
         return (
-            f"🌤 **MYANMAR WEATHER** `[2/4 • အဓိက ၁၅ မြို့]`\n"
+            f"⚽ **FOOTBALL LIVE & SCORES** `[2/2 • {now.strftime('%d %b')}]`\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{cache_data['weather_main']}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔄 _စာမျက်နှာ အလိုအလျောက် ပြောင်းလဲပြသနေသည်_"
-        )
-
-    elif page_key == "weather_other":
-        return (
-            f"🏙 **MYANMAR WEATHER** `[3/4 • အခြား ၃၀ မြို့]`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{cache_data['weather_other']}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔄 _စာမျက်နှာ အလိုအလျောက် ပြောင်းလဲပြသနေသည်_"
-        )
-
-    elif page_key == "market_sports":
-        return (
-            f"💹 **MARKET & LIVE SCORES** `[4/4 • Global]`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 **Global Gold & Crypto Prices**\n"
-            f"{cache_data['market']}\n\n"
-            f"⚽ **Today's Football ({now.strftime('%d %b')})**\n"
             f"{cache_data['football']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔄 _စာမျက်နှာ အလိုအလျောက် ပြောင်းလဲပြသနေသည်_"
@@ -995,12 +788,13 @@ async def spawn_new_board():
         pass
 
     state["pin_msg_id"] = sent.id
+    await save_backup_to_log(f"Auto Backup (Board Init): {get_now().strftime('%Y-%m-%d %H:%M')}")
 
 async def rotate_board_page():
+    await check_daily_rollover(get_now())
     msg_id = state.get("pin_msg_id")
     if not msg_id:
         return
-    await check_daily_rollover(get_now())
     state["page_index"] = (state.get("page_index", 0) + 1) % len(PAGES)
     try:
         await app.edit_message_text(
@@ -1043,8 +837,8 @@ async def cmd_test_api(client, message):
         f"**Football Preview:**\n{cache_data['football']}"
     )
 
-# 1. Manual Unified Backup & Restore (/backup & /restore)
-@app.on_message(filters.command(["backup", "backuphbd", "backuprs"]) & owner_only)
+# 1. Manual Unified Backup & Restore (/backupboard & /restore)
+@app.on_message(filters.command(["backupboard", "backuphbd", "backuprs"]) & owner_only)
 async def cmd_manual_backup(client, message):
     now_str = get_now().strftime("%Y-%m-%d %H:%M")
     caption = (
@@ -1053,7 +847,7 @@ async def cmd_manual_backup(client, message):
         f"• အတွဲစာရင်း: `{len(state['relationships'])} တွဲ`\n"
         f"_(ပြန်သွင်းလိုပါက ဒီဖိုင်ကို Reply ပြန်ပြီး `/restore` ရိုက်ပါ)_"
     )
-    await save_backup_to_log(f"Manual Backup: {now_str}")
+    await save_backup_to_log(f"Manual Backup: {now_str}", keep_local=True)
     await message.reply_document(document=BACKUP_FILE, caption=caption)
     if os.path.exists(BACKUP_FILE):
         os.remove(BACKUP_FILE)
@@ -1081,8 +875,6 @@ async def cmd_manual_restore(client, message):
     finally:
         if os.path.exists(path):
             os.remove(path)
-        if os.path.exists(BACKUP_FILE):
-            os.remove(BACKUP_FILE)
 
 # 2. Birthday Management (/addhbd, /hbdlist, /delhbd)
 @app.on_message(filters.command("addhbd") & owner_only)
@@ -1113,7 +905,8 @@ async def add_birthday(client, message):
 
     state["birthdays"] = [b for b in state["birthdays"] if int(b["uid"]) != uid]
     state["birthdays"].append({"uid": uid, "name": name, "username": uname, "day": int(day), "month": month})
-    await message.reply(f"✅ {user_link(uid, name)} ရဲ့ မွေးနေ့ (`{day} {month}`) ကို စာရင်းသွင်းပြီးပါပြီ။\n_(သိမ်းဆည်းရန် `/backup` ရိုက်ထားနိုင်ပါသည်)_", parse_mode=ParseMode.MARKDOWN)
+    await save_backup_to_log(f"Auto Backup (Add HBD): {name}")
+    await message.reply(f"✅ {user_link(uid, name)} ရဲ့ မွေးနေ့ (`{day} {month}`) ကို စာရင်းသွင်းပြီး Log Channel တွင် သိမ်းဆည်းပြီးပါပြီ။", parse_mode=ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("hbdlist") & owner_only)
 async def list_birthdays(client, message):
@@ -1138,6 +931,7 @@ async def delete_birthday(client, message):
 
     if query.isdigit() and 1 <= int(query) <= len(state["birthdays"]):
         removed = state["birthdays"].pop(int(query) - 1)
+        await save_backup_to_log(f"Auto Backup (Del HBD): {removed['name']}")
         return await message.reply(f"🗑️ **{clean_md(removed['name'])}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
 
     before_len = len(state["birthdays"])
@@ -1149,6 +943,7 @@ async def delete_birthday(client, message):
     ]
     if len(state["birthdays"]) == before_len:
         return await message.reply(f"❌ `{query}` ဖြင့် မွေးနေ့စာရင်း မတွေ့ပါ။ (`/hbdlist` ဖြင့် ပြန်စစ်ပါ)")
+    await save_backup_to_log(f"Auto Backup (Del HBD): {query}")
     await message.reply(f"🗑️ **{clean_md(query)}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
 
 # 3. Relationship Management (/addrs, /rslist, /delrs)
@@ -1184,9 +979,10 @@ async def add_relationship(client, message):
         "uid2": uid2, "name2": name2, "user2": user2,
         "day": int(day), "month": month, "year": int(year)
     })
+    await save_backup_to_log(f"Auto Backup (Add RS): {name1} & {name2}")
     p1 = user_link(uid1, name1)
     p2 = user_link(uid2, name2)
-    await message.reply(f"💑 {p1} ❤️ {p2} အတွဲကို (`{day} {month} {year}`) မှစတင်၍ စာရင်းသွင်းပြီးပါပြီ။\n_(သိမ်းဆည်းရန် `/backup` ရိုက်ထားနိုင်ပါသည်)_", parse_mode=ParseMode.MARKDOWN)
+    await message.reply(f"💑 {p1} ❤️ {p2} အတွဲကို (`{day} {month} {year}`) မှစတင်၍ စာရင်းသွင်းပြီး Log Channel တွင် သိမ်းဆည်းပြီးပါပြီ။", parse_mode=ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("rslist") & owner_only)
 async def list_relationships(client, message):
@@ -1213,6 +1009,7 @@ async def delete_relationship(client, message):
 
     if query.isdigit() and 1 <= int(query) <= len(state["relationships"]):
         removed = state["relationships"].pop(int(query) - 1)
+        await save_backup_to_log(f"Auto Backup (Del RS): {removed['name1']} & {removed['name2']}")
         return await message.reply(f"💔 **{clean_md(removed['name1'])} & {clean_md(removed['name2'])}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
 
     kept = []
@@ -1237,6 +1034,7 @@ async def delete_relationship(client, message):
         return await message.reply(f"❌ `{query}` ဖြင့် အတွဲစာရင်း မတွေ့ပါ။ (`/rslist` ဖြင့် ပြန်စစ်ပါ)")
 
     state["relationships"] = kept
+    await save_backup_to_log(f"Auto Backup (Del RS): {', '.join(removed_pairs)}")
     await message.reply(f"💔 **{', '.join(removed_pairs)}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
 
 # ================= MESSAGE COUNTER & AUTO-PROFILE SYNC =================
@@ -1280,7 +1078,7 @@ async def main():
     await load_state()
     await update_external_data()
     await start_scheduler()
-    print("🚀 Final Owner-Controlled Billboard Bot Started Successfully!")
+    print("🚀 Final 2-Page Owner-Controlled Billboard Bot Started Successfully!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
