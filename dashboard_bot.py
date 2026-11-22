@@ -16,8 +16,8 @@ from flask import Flask
 import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pyrogram import Client, filters
-from pyrogram.enums import ParseMode
-from pyrogram.errors import MessageNotModified, FloodWait
+from pyrogram.enums import ParseMode, ChatMemberStatus
+from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
 
 # ================= CONFIGURATION =================
 API_ID = int(os.environ.get("API_ID", "123456"))
@@ -107,6 +107,61 @@ async def resolve_user_target(target: str):
         if clean_target.isdigit():
             return int(clean_target), f"User_{clean_target[-4:]}", ""
         return None, None, None
+
+# ================= AUTO-CLEANUP FOR DEPARTED MEMBERS =================
+async def is_user_in_group(uid: int) -> bool:
+    try:
+        member = await app.get_chat_member(TARGET_GROUP_ID, uid)
+        if member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+            return False
+        return True
+    except UserNotParticipant:
+        return False
+    except Exception:
+        # API error/timeout ဖြစ်လျှင် မှားမဖျက်မိစေရန် True ပြန်မည်
+        return True
+
+async def remove_departed_user_records(uid: int) -> bool:
+    changed = False
+    before_b = len(state["birthdays"])
+    state["birthdays"] = [b for b in state["birthdays"] if int(b["uid"]) != uid]
+    if len(state["birthdays"]) != before_b:
+        changed = True
+
+    before_r = len(state["relationships"])
+    state["relationships"] = [
+        r for r in state["relationships"]
+        if int(r["uid1"]) != uid and int(r["uid2"]) != uid
+    ]
+    if len(state["relationships"]) != before_r:
+        changed = True
+
+    if str(uid) in state["chat_counts"]:
+        del state["chat_counts"][str(uid)]
+        changed = True
+
+    return changed
+
+async def cleanup_all_departed_members() -> int:
+    uids_to_check = set()
+    for b in state["birthdays"]:
+        uids_to_check.add(int(b["uid"]))
+    for r in state["relationships"]:
+        uids_to_check.add(int(r["uid1"]))
+        uids_to_check.add(int(r["uid2"]))
+
+    removed_users = 0
+    any_changed = False
+    for uid in uids_to_check:
+        if not await is_user_in_group(uid):
+            if await remove_departed_user_records(uid):
+                removed_users += 1
+                any_changed = True
+        await asyncio.sleep(0.2)
+
+    if any_changed:
+        await save_backup_to_log(f"Auto Cleanup ({removed_users} departed members removed)")
+    return removed_users
 
 # ================= EXACT MYANMAR CALENDAR & GLOBAL OBSERVANCES =================
 def to_myanmar_digits(num: int) -> str:
@@ -488,7 +543,6 @@ async def fetch_daily_football(session, now: datetime.datetime) -> tuple:
     today_str = now.strftime("%Y%m%d")
     query_dates = [yest_str, today_str]
 
-    # Priority order: EPL -> UCL -> La Liga -> Serie A -> Bundesliga
     leagues = [
         ("🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League", "eng.1"),
         ("🏆 Champions League", "uefa.champions"),
@@ -569,11 +623,9 @@ async def update_external_data() -> str:
     logs = []
     now = get_now()
     async with get_http_session() as session:
-        # 0. History
         await fetch_on_this_day(session, now)
         logs.append(f"📜 History: {'OK' if cache_data['history_text'] else 'Empty'}")
 
-        # 1. Gold & Crypto (Primary: Binance Public API | Fallback: CoinGecko)
         market_ok = False
         try:
             b_url = 'https://api.binance.com/api/v3/ticker/price?symbols=["PAXGUSDT","BTCUSDT","BNBUSDT","SOLUSDT","TONUSDT"]'
@@ -633,7 +685,6 @@ async def update_external_data() -> str:
             except Exception as e:
                 logs.append(f"💹 CoinGecko ERR: {e}")
 
-        # 2. Football (Priority order, full day matches)
         f_count, f_text = await fetch_daily_football(session, now)
         cache_data["football"] = f_text
         logs.append(f"⚽ Football ({now.strftime('%d %b')}): {f_count} matches OK")
@@ -691,6 +742,9 @@ async def send_daily_celebrations(now: datetime.datetime):
 async def check_daily_rollover(now: datetime.datetime):
     today_key = now.strftime("%Y-%m-%d")
     if state["current_date"] and state["current_date"] != today_key:
+        # Group ထဲမရှိတော့သော Member များ၏ စာရင်းကို အော်တိုရှင်းလင်းမည်
+        await cleanup_all_departed_members()
+
         if state["chat_counts"]:
             sorted_yest = sorted(state["chat_counts"].items(), key=lambda x: x[1]["count"], reverse=True)[:3]
             medals = ["🥇", "🥈", "🥉"]
@@ -812,6 +866,46 @@ async def rotate_board_page():
         if "MESSAGE_ID_INVALID" in str(e) or "Message to edit not found" in str(e):
             await spawn_new_board()
 
+# ================= MEMBER SELF-SERVICE BIRTHDAY (/myhbd) =================
+@app.on_message(filters.command(["myhbd", "sethbd"]) & filters.chat(TARGET_GROUP_ID))
+async def member_self_add_birthday(client, message):
+    if not message.from_user or message.from_user.is_bot:
+        return
+
+    uid = message.from_user.id
+    name = message.from_user.first_name or "User"
+    uname = message.from_user.username or ""
+
+    # Owner မဟုတ်လျှင် တစ်ကြိမ်သာ ထည့်ခွင့်ပြုမည်
+    if uid != OWNER_ID:
+        already_exists = any(int(b["uid"]) == uid for b in state["birthdays"])
+        if already_exists:
+            return await message.reply(
+                f"⚠️ {user_link(uid, name)} ၏ မွေးနေ့ကို စာရင်းသွင်းပြီးသား ဖြစ်ပါသည်။\n"
+                f"_(ရက်စွဲမှားယွင်းပါက Owner ထံ ဆက်သွယ်၍ စာရင်းဖျက်ခိုင်းပြီးမှ ပြန်ထည့်ပါ)_",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+    parts = message.text.split()
+    if len(parts) < 3:
+        return await message.reply(
+            "📌 **မိမိမွေးနေ့ ထည့်သွင်းနည်း:**\n"
+            "• `/myhbd 25 Dec` _(ရက်နှင့် လအတိုကောက် Jan မှ Dec အထိ)_\n"
+            "⚠️ _တစ်ကြိမ်သာ ထည့်ခွင့်ရှိသောကြောင့် မှန်ကန်စွာ ရိုက်ထည့်ပါ_"
+        )
+
+    day, month = parts[1], parts[2].capitalize()[:3]
+    if month not in MONTH_MAP or not day.isdigit() or not (1 <= int(day) <= 31):
+        return await message.reply("❌ ရက် (1-31) နှင့် လအတိုကောက် (`Jan` မှ `Dec`) မှန်ကန်စွာ ထည့်ပါ။ ဥပမာ- `/myhbd 25 Dec`")
+
+    state["birthdays"] = [b for b in state["birthdays"] if int(b["uid"]) != uid]
+    state["birthdays"].append({"uid": uid, "name": name, "username": uname, "day": int(day), "month": month})
+    await save_backup_to_log(f"Auto Backup (Self HBD): {name}")
+    await message.reply(
+        f"✅ {user_link(uid, name)} ၏ မွေးနေ့ (`{day} {month}`) ကို စာရင်းသွင်းလိုက်ပါပြီ 🎂",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 # ================= OWNER-ONLY COMMANDS =================
 @app.on_message(filters.command(["board", "initdash"]) & owner_only)
 async def cmd_spawn_board(client, message):
@@ -836,6 +930,12 @@ async def cmd_test_api(client, message):
         f"**Market Preview:**\n{cache_data['market']}\n\n"
         f"**Football Preview:**\n{cache_data['football']}"
     )
+
+@app.on_message(filters.command("syncmembers") & owner_only)
+async def cmd_sync_members(client, message):
+    wait_msg = await message.reply("⏳ Group ထဲတွင် မရှိတော့သော အကောင့်များကို စစ်ဆေးဖယ်ရှားနေပါသည်...")
+    removed_count = await cleanup_all_departed_members()
+    await wait_msg.edit_text(f"✅ စစ်ဆေးပြီးပါပြီ — Group မှ ထွက်သွားသူ **{removed_count} ဦး** ၏ စာရင်းများကို ဖျက်လိုက်ပါပြီ။")
 
 # 1. Manual Unified Backup & Restore (/backupboard & /restore)
 @app.on_message(filters.command(["backupboard", "backuphbd", "backuprs"]) & owner_only)
@@ -876,7 +976,7 @@ async def cmd_manual_restore(client, message):
         if os.path.exists(path):
             os.remove(path)
 
-# 2. Birthday Management (/addhbd, /hbdlist, /delhbd)
+# 2. Owner Unlimited Birthday Management (/addhbd, /hbdlist, /delhbd)
 @app.on_message(filters.command("addhbd") & owner_only)
 async def add_birthday(client, message):
     parts = message.text.split()
@@ -905,7 +1005,7 @@ async def add_birthday(client, message):
 
     state["birthdays"] = [b for b in state["birthdays"] if int(b["uid"]) != uid]
     state["birthdays"].append({"uid": uid, "name": name, "username": uname, "day": int(day), "month": month})
-    await save_backup_to_log(f"Auto Backup (Add HBD): {name}")
+    await save_backup_to_log(f"Auto Backup (Owner Add HBD): {name}")
     await message.reply(f"✅ {user_link(uid, name)} ရဲ့ မွေးနေ့ (`{day} {month}`) ကို စာရင်းသွင်းပြီး Log Channel တွင် သိမ်းဆည်းပြီးပါပြီ။", parse_mode=ParseMode.MARKDOWN)
 
 @app.on_message(filters.command("hbdlist") & owner_only)
@@ -932,7 +1032,7 @@ async def delete_birthday(client, message):
     if query.isdigit() and 1 <= int(query) <= len(state["birthdays"]):
         removed = state["birthdays"].pop(int(query) - 1)
         await save_backup_to_log(f"Auto Backup (Del HBD): {removed['name']}")
-        return await message.reply(f"🗑️ **{clean_md(removed['name'])}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
+        return await message.reply(f"🗑️ **{clean_md(removed['name'])}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။ _(ထိုသူ ကိုယ်တိုင် `/myhbd` ဖြင့် ပြန်ထည့်နိုင်ပါပြီ)_")
 
     before_len = len(state["birthdays"])
     state["birthdays"] = [
@@ -944,7 +1044,7 @@ async def delete_birthday(client, message):
     if len(state["birthdays"]) == before_len:
         return await message.reply(f"❌ `{query}` ဖြင့် မွေးနေ့စာရင်း မတွေ့ပါ။ (`/hbdlist` ဖြင့် ပြန်စစ်ပါ)")
     await save_backup_to_log(f"Auto Backup (Del HBD): {query}")
-    await message.reply(f"🗑️ **{clean_md(query)}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။")
+    await message.reply(f"🗑️ **{clean_md(query)}** ကို မွေးနေ့စာရင်းမှ ဖျက်လိုက်ပါပြီ။ _(ထိုသူ ကိုယ်တိုင် `/myhbd` ဖြင့် ပြန်ထည့်နိုင်ပါပြီ)_")
 
 # 3. Relationship Management (/addrs, /rslist, /delrs)
 @app.on_message(filters.command("addrs") & owner_only)
@@ -1037,7 +1137,15 @@ async def delete_relationship(client, message):
     await save_backup_to_log(f"Auto Backup (Del RS): {', '.join(removed_pairs)}")
     await message.reply(f"💔 **{', '.join(removed_pairs)}** အတွဲကို စာရင်းမှ ဖြုတ်လိုက်ပါပြီ။")
 
-# ================= MESSAGE COUNTER & AUTO-PROFILE SYNC =================
+# ================= LEFT MEMBER CLEANUP & MESSAGE COUNTER =================
+@app.on_message(filters.chat(TARGET_GROUP_ID) & filters.left_chat_member)
+async def on_member_leave(client, message):
+    left_user = message.left_chat_member
+    if not left_user:
+        return
+    if await remove_departed_user_records(left_user.id):
+        await save_backup_to_log(f"Auto Cleanup (Member Left): {left_user.first_name or left_user.id}")
+
 @app.on_message(filters.chat(TARGET_GROUP_ID) & ~filters.service)
 async def count_messages(client, message):
     if not message.from_user or message.from_user.is_bot:
